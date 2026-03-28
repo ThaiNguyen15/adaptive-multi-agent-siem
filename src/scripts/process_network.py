@@ -2,7 +2,7 @@
 Script to process CICIDS 2018 network domain data.
 
 Usage:
-    python -m src.scripts.process_network --raw-dir data/raw/cicids2018 --output-dir data/processed/cicids2018
+    python -m src.scripts.process_network --raw-dir data/raw/cicflowmeter --output-dir data/processed/cicids2018
 """
 
 import argparse
@@ -28,6 +28,13 @@ def main():
     parser.add_argument(
         "--batch-size", type=int, default=50000, help="Batch size for processing (default: 50000)"
     )
+    parser.add_argument(
+        "--label-mode",
+        type=str,
+        default="binary",
+        choices=["binary", "family", "raw"],
+        help="Primary downstream label view metadata",
+    )
 
     args = parser.parse_args()
 
@@ -37,6 +44,7 @@ def main():
         processed_data_dir=args.output_dir,
         num_shards=args.num_shards,
         batch_size=args.batch_size,
+        label_mode=args.label_mode,
     )
 
     # Run pipeline

@@ -28,12 +28,13 @@ python3 -m src.scripts.inspect_parquet \
 ## 2. Running Network Pipeline
 
 ```bash
-# Process CICIDS 2018 network data
+# Process CICIDS 2018 CICFlowMeter data
 python -m src.scripts.process_network \
-    --raw-dir data/raw/cicids2018 \
+    --raw-dir data/raw/cicflowmeter/Processed\ Traffic\ Data\ for\ ML\ Algorithms \
     --output-dir data/processed/cicids2018 \
-    --num-shards 512 \
-    --batch-size 50000
+    --num-shards 256 \
+    --batch-size 50000 \
+    --label-mode binary
 ```
 
 ## 3. Running API Traffic Pipeline

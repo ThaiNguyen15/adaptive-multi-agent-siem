@@ -1,8 +1,5 @@
 """
-CICIDS 2018 Network domain pipeline orchestrator.
-
-Example showing how to adapt the pipeline pattern for a different domain.
-Follows the same 4-step pattern as login domain.
+CICIDS 2018 network-flow pipeline orchestrator.
 """
 
 from pathlib import Path
@@ -15,7 +12,7 @@ from .feature_builder import CICIDS2018FeatureBuilder
 
 
 class CICIDS2018Pipeline:
-    """End-to-end pipeline for CICIDS2018 network data processing."""
+    """End-to-end pipeline for CICFlowMeter network-flow processing."""
 
     def __init__(self, config: CICIDS2018Config):
         """Initialize pipeline.
@@ -27,9 +24,7 @@ class CICIDS2018Pipeline:
         self.config.ensure_dirs()
 
         self.normalizer = CICIDS2018Normalizer(config)
-        self.sharding = HashSharding(
-            num_shards=config.num_shards, shard_key=config.shard_key  # src_ip for network
-        )
+        self.sharding = HashSharding(num_shards=config.num_shards, shard_key=config.shard_key)
         self.feature_builder = CICIDS2018FeatureBuilder(config)
         self.splitter = TimeBasedSplitter(
             train_ratio=config.train_ratio,
@@ -59,20 +54,20 @@ class CICIDS2018Pipeline:
         return normalized_df
 
     def step2_shard(self, df: pd.DataFrame) -> None:
-        """Step 2: Shard by source IP.
+        """Step 2: Shard by destination port.
 
         Args:
             df: Normalized dataframe
         """
-        print("[Step 2] Sharding by source IP...")
+        print("[Step 2] Sharding by destination port...")
 
         shards_dir = self.config.get_shards_dir()
         self.sharding.save_shards(df, shards_dir, format="parquet")
         print(f"  Saved shards to: {shards_dir}")
 
     def step3_build_features(self) -> None:
-        """Step 3: Build network features for each shard."""
-        print("[Step 3] Building network features...")
+        """Step 3: Build derived network-flow features for each shard."""
+        print("[Step 3] Building network-flow features...")
 
         shards_dir = self.config.get_shards_dir()
         features_dir = self.config.get_features_dir()
@@ -97,7 +92,7 @@ class CICIDS2018Pipeline:
             input_dir: Directory containing raw network data
         """
         print("\n" + "=" * 60)
-        print("CICIDS 2018 NETWORK PROCESSING PIPELINE")
+        print("CICIDS 2018 NETWORK-FLOW PROCESSING PIPELINE")
         print("=" * 60 + "\n")
 
         # Step 1: Normalize
