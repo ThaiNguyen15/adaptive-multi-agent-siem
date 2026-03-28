@@ -9,6 +9,7 @@ Orchestrates end-to-end processing:
 """
 
 from pathlib import Path
+import pandas as pd
 from src.core.sharding import HashSharding
 from src.core.splitter import TimeBasedSplitter
 from .config import LoginConfig

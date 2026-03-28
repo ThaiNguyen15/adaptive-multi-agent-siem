@@ -14,11 +14,16 @@ pip install -r requirements.txt
 
 # Process login data
 python -m src.scripts.process_login \
-    --raw-dir data/raw/rba-dataset \
+    --raw-dir data/raw/rba-dataset/test \
     --output-dir data/processed/login \
-    --num-shards 256 \
-    --batch-size 10000
+    --num-shards 3 \
+    --batch-size 10
 ```
+# View parquet
+python3 -m src.scripts.inspect_parquet \
+  --file data/processed/login/splits/train/shard_000.parquet \
+  --rows 10
+
 
 ## 2. Running Network Pipeline
 
