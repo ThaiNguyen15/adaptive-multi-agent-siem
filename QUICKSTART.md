@@ -37,7 +37,59 @@ python -m src.scripts.process_network \
     --label-mode binary
 ```
 
-## 3. Running API Traffic Pipeline
+## 3. Running HTTPS Brute-force Pipeline
+
+```bash
+# Recommended default: repo-native processing from aggregated flows
+python3 -m src.scripts.process_brute_force_https \
+    --raw-dir data/raw/brute-force-dataset \
+    --output-dir data/processed/brute_force_https \
+    --input-view aggregated_flows \
+    --num-shards 128 \
+    --batch-size 25000 \
+    --label-mode binary
+```
+
+```bash
+# Fast baseline from author-provided engineered samples
+python3 -m src.scripts.process_brute_force_https \
+    --raw-dir data/raw/brute-force-dataset \
+    --output-dir data/processed/brute_force_https_samples \
+    --input-view samples \
+    --num-shards 64 \
+    --batch-size 25000 \
+    --label-mode binary
+```
+
+```bash
+# Generalization experiment target: predict attack tool instead of binary label
+python3 -m src.scripts.process_brute_force_https \
+    --raw-dir data/raw/brute-force-dataset \
+    --output-dir data/processed/brute_force_https_tool \
+    --input-view aggregated_flows \
+    --num-shards 128 \
+    --batch-size 25000 \
+    --label-mode tool
+```
+
+Why `brute_force_https` is processed this way:
+
+- the public dataset ships in 3 views: `flows.csv`, `aggregated_flows.csv`, and `samples.csv`
+- `aggregated_flows` is the best default for this repo because it is still flow-centric but avoids the heavier packet-prefix parsing cost of `flows.csv`
+- `samples` is useful for a fast benchmark because the dataset authors already extracted features
+- sharding uses `service_key` instead of `dst_port`, because a large share of the data targets HTTPS on port `443` and `dst_port` alone would create skew
+
+Recommended usage:
+
+- start with `aggregated_flows + label_mode=binary` for the main baseline
+- run `samples + label_mode=binary` to compare against the author-engineered feature space
+- use `label_mode=tool` or `label_mode=app` when you want cross-tool or cross-application generalization experiments
+
+Current limitation:
+
+- the core splitter is still time-based, so scenario-holdout evaluation is not yet automated in the pipeline
+
+## 4. Running API Traffic Pipeline
 
 ```bash
 # Process ATRDF / Cisco Ariel API traffic data
@@ -142,7 +194,7 @@ Recommended next steps after preprocessing:
 - train a `combined` model to measure the accuracy ceiling on this dataset
 - compare all three before deciding what to trust in production-like settings
 
-## 4. Using Output for ML Training
+## 5. Using Output for ML Training
 
 ```python
 import pandas as pd
@@ -170,7 +222,7 @@ print(f"Test: {len(test_df)} records")
 print(train_df.columns)
 ```
 
-## 5. Customizing Configuration
+## 6. Customizing Configuration
 
 ```python
 from src.domains.login import LoginConfig, LoginPipeline
@@ -192,7 +244,7 @@ pipeline = LoginPipeline(config)
 pipeline.run(config.raw_data_dir)
 ```
 
-## 6. Adding New Domain (Agent Logs Example)
+## 7. Adding New Domain (Agent Logs Example)
 
 ### Step 1: Create config.py
 ```python
