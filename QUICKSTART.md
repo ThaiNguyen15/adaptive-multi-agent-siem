@@ -36,7 +36,112 @@ python -m src.scripts.process_network \
     --batch-size 50000
 ```
 
-## 3. Using Output for ML Training
+## 3. Running API Traffic Pipeline
+
+```bash
+# Process ATRDF / Cisco Ariel API traffic data
+python -m src.scripts.process_api_traffic \
+    --raw-dir data/raw/Cisco_Ariel_Uni_API_security_challenge/Datasets/test \
+    --output-dir data/processed/api_traffic \
+    --num-shards 16 \
+    --batch-size 5000 \
+    --task-type binary \
+    --feature-mode request_only \
+    --text-mode hybrid
+```
+
+```bash
+# Example for leakage audit using response-only features
+python -m src.scripts.process_api_traffic \
+    --raw-dir data/raw/Cisco_Ariel_Uni_API_security_challenge/Datasets \
+    --output-dir data/processed/api_traffic_response_audit \
+    --num-shards 64 \
+    --batch-size 5000 \
+    --task-type binary \
+    --feature-mode response_only \
+    --text-mode hybrid
+```
+
+```bash
+# Example for multiclass attack-type preparation with combined view
+python -m src.scripts.process_api_traffic \
+    --raw-dir data/raw/Cisco_Ariel_Uni_API_security_challenge/Datasets \
+    --output-dir data/processed/api_traffic_attack_type \
+    --num-shards 256 \
+    --batch-size 5000 \
+    --task-type attack_type \
+    --feature-mode combined \
+    --text-mode hybrid
+```
+
+```bash
+# View processed API traffic parquet
+python3 -m src.scripts.inspect_parquet \
+  --file data/processed/api_traffic/splits/train/shard_000.parquet \
+  --rows 10
+```
+
+Notes on `--num-shards` for `api_traffic`:
+
+- Yes, this domain supports `--num-shards`
+- Higher shard counts can help when datasets are large and you want smaller parquet files or parallel downstream loading
+- Too many shards can slow processing because of extra file overhead
+- For Dataset 1 or small local tests, use `16` to `64`
+- For larger datasets like Dataset 3 or 4, `128` to `512` is a reasonable starting range
+- `api_traffic` is event-level, so sharding is mainly for scale and I/O management, not for preserving per-user history like the `login` domain
+
+### Why `api_traffic` is processed this way
+
+ATRDF / Cisco Ariel is an event-level HTTP security dataset. Each sample is one
+API request/response transaction, not a long user behavior history like the
+`login` domain.
+
+The preprocessing strategy is intentionally split into request and response
+modalities:
+
+- `request` is the primary signal for security detection because it contains the
+  attacker-controlled payload: URL, query string, headers, cookies, and body
+- `response` is kept separately because it is useful for debugging and leakage
+  auditing, but it should not automatically become the main source of truth for
+  a security model
+
+Why separate `request` and `response` instead of merging everything immediately:
+
+- request-side features help model malicious intent or attack attempts
+- response-side features can reveal dataset shortcuts, for example a model that
+  learns to predict from `401`, `404`, or error strings instead of from the
+  attack payload itself
+- keeping them separate makes it easy to compare:
+  - `request_only`: request-centric modeling
+  - `response_only`: leakage audit
+  - `combined`: upper-bound practical performance
+
+Important interpretation:
+
+- a suspicious request does not automatically mean the backend is truly
+  vulnerable
+- for this dataset, labels are closer to `malicious request family` than to
+  `confirmed exploit success`
+- this is why request-centric detection is useful, but should be interpreted as
+  attack-attempt detection, not guaranteed compromise detection
+
+What the pipeline does for `api_traffic`:
+
+1. Normalize nested JSON into a flat event schema
+2. Create modality-separated text fields:
+   `request_text`, `response_text`, `combined_text`
+3. Build lexical and token-stat features according to:
+   `feature_mode=request_only|response_only|combined`
+4. Save shards and train/val/test splits for downstream experiments
+
+Recommended next steps after preprocessing:
+
+- train a `request_only` baseline first
+- train a `response_only` model to audit leakage
+- train a `combined` model to measure the accuracy ceiling on this dataset
+- compare all three before deciding what to trust in production-like settings
+
+## 4. Using Output for ML Training
 
 ```python
 import pandas as pd
@@ -64,7 +169,7 @@ print(f"Test: {len(test_df)} records")
 print(train_df.columns)
 ```
 
-## 4. Customizing Configuration
+## 5. Customizing Configuration
 
 ```python
 from src.domains.login import LoginConfig, LoginPipeline
@@ -86,7 +191,7 @@ pipeline = LoginPipeline(config)
 pipeline.run(config.raw_data_dir)
 ```
 
-## 5. Adding New Domain (Agent Logs Example)
+## 6. Adding New Domain (Agent Logs Example)
 
 ### Step 1: Create config.py
 ```python
