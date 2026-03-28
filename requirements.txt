@@ -1,3 +1,5 @@
+numpy==2.2.6
 pandas==2.2.3
 pyarrow==18.1.0
+PyYAML==6.0.2
 python-dotenv==1.0.1
