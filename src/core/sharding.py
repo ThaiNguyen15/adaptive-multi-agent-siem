@@ -106,6 +106,36 @@ class HashSharding:
 
         self.logger.info(f"Saved {len(shards)} shards to {output_dir}")
 
+    def append_partitioned_shards(
+        self,
+        df: pd.DataFrame,
+        output_dir: Path,
+        chunk_id: int,
+        format: str = "parquet",
+    ) -> list:
+        """Partition one dataframe chunk and append shard parts to disk."""
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        shards = self.partition(df)
+        written_files = []
+
+        for shard_id, shard_df in shards.items():
+            if format == "parquet":
+                filename = output_dir / f"shard_{shard_id:03d}_part_{chunk_id:06d}.parquet"
+                shard_df.to_parquet(filename, index=False, compression="snappy")
+            elif format == "csv":
+                filename = output_dir / f"shard_{shard_id:03d}_part_{chunk_id:06d}.csv"
+                shard_df.to_csv(filename, index=False)
+            else:
+                raise ValueError(f"Unsupported format: {format}")
+            written_files.append(filename)
+
+        self.logger.info(
+            f"Appended {len(written_files)} shard parts for chunk {chunk_id} into {output_dir}"
+        )
+        return written_files
+
     def load_shard(self, shard_id: int, input_dir: Path, format: str = "parquet") -> pd.DataFrame:
         """Load single shard from disk.
 

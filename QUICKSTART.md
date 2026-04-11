@@ -5,24 +5,72 @@
 ```bash
 # Activate environment
 source .venv/bin/activate
-
-Install the required packages:
-
-```bash
+# Install dependencies
 pip install -r requirements.txt
-```
 
-# Process login data
+# Small local smoke test
 python -m src.scripts.process_login \
     --raw-dir data/raw/rba-dataset/test \
     --output-dir data/processed/login \
     --num-shards 3 \
-    --batch-size 10
+    --batch-size 10 \
+    --feature-windows 1 7 30
 ```
-# View parquet
-python3 -m src.scripts.inspect_parquet \
-  --file data/processed/login/splits/train/shard_000.parquet \
-  --rows 10
+
+```bash
+# Recommended baseline for the full dataset
+python -m src.scripts.process_login \
+    --raw-dir data/raw/rba-dataset \
+    --output-dir data/processed/login_full \
+    --num-shards 128 \
+    --batch-size 5000 \
+    --feature-windows 1 7 30
+```
+
+What the login pipeline now does:
+
+- normalizes raw columns into the login schema
+- keeps raw context for audit, but creates stable tokens: `ip_token`, `device_token`, `geo_token`, `context_token`
+- builds strictly-past behavioral features per `user_id`
+- expands important numeric signals into raw/log/bin views
+- writes `feature_manifest.json` so downstream code can train separate `temporal`, `novelty`, `continuity`, `familiarity`, `outcome_pressure`, and `diversity` heads
+
+Recommended best practices for `login`:
+
+- do not train directly on `user_id`, raw `ip`, raw `city`, or raw `device`
+- start with numeric behavioral features plus novelty/continuity flags
+- keep the token block optional: use it only if you explicitly want an embedding path and audit leakage
+- keep time-based evaluation; do not random-split login rows
+- use smaller `--num-shards` for smoke tests and larger values only when the dataset is large enough to justify extra files
+- if you change `--feature-windows`, keep at least one short window and one long window so the model can see both burstiness and habit
+
+Useful output files:
+
+- `data/processed/login/normalized.parquet`
+- `data/processed/login/features/`
+- `data/processed/login/splits/`
+- `data/processed/login/config.json`
+- `data/processed/login/feature_manifest.json`
+
+Quick parquet check:
+
+```bash
+python - <<'PY'
+import pandas as pd
+
+df = pd.read_parquet("data/processed/login/splits/train/shard_000.parquet")
+print(df[[
+    "user_id",
+    "ip_token",
+    "device_token",
+    "context_token",
+    "seconds_since_prev_login",
+    "is_new_context_token",
+    "current_context_prior_count",
+    "failure_rate_window1",
+]].head(10))
+PY
+```
 
 
 ## 2. Running Network Pipeline

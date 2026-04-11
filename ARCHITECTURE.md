@@ -6,56 +6,79 @@ Modular, scalable architecture for processing multiple security log domains with
 
 ```
 src/
-├── core/                    # Shared base classes & utilities
-│   ├── base_config.py      # Configuration management
-│   ├── base_normalizer.py  # Schema normalization 
-│   ├── base_feature_builder.py  # Feature engineering
-│   ├── sharding.py         # Hash-based data partitioning
-│   ├── splitter.py         # Time-based train/val/test splitting
-│   └── utils.py            # Shared utilities
+├── core/                    # Shared processing primitives
+│   ├── base_config.py
+│   ├── base_normalizer.py
+│   ├── base_feature_builder.py
+│   ├── sharding.py
+│   ├── splitter.py
+│   └── utils.py
 │
-├── domains/                # Domain-specific implementations
+├── domains/                # Domain-centric lifecycle packages
 │   ├── login/              # Login authentication logs
-│   │   ├── config.py       # LoginConfig
-│   │   ├── normalizer.py   # Normalize to standard login schema
-│   │   ├── feature_builder.py  # Login-specific features
-│   │   └── pipeline.py     # Orchestrate full login pipeline
+│   │   ├── processing/     # normalize -> shard -> feature -> split
+│   │   │   ├── config.py
+│   │   │   ├── normalizer.py
+│   │   │   ├── feature_builder.py
+│   │   │   └── pipeline.py
+│   │   ├── training/       # domain-specific experiment defaults
+│   │   │   ├── config.py
+│   │   │   └── runner.py
+│   │   ├── evaluation/
+│   │   │   └── runner.py
+│   │   ├── testing/
+│   │   │   └── runner.py
+│   │   └── __init__.py     # public domain API
 │   │
-│   ├── cicids2018/         # Network anomaly detection
-│   │   ├── config.py       # CICIDS2018Config  
-│   │   ├── normalizer.py   # Network flow normalization
-│   │   ├── feature_builder.py  # Network traffic features
-│   │   └── pipeline.py     # Network processing pipeline
+│   ├── cicids2018/
+│   ├── api_traffic/
+│   ├── brute_force_https/
+│   └── agent_logs/
 │   │
-│   └── agent_logs/         # Placeholder for agent logs domain
+├── training/               # Train-stage code and experiment artifacts
+│   ├── config.py           # ExperimentConfig
+│   ├── dataset.py          # Split parquet loader
+│   ├── model.py            # NumPy baseline model
+│   └── runner.py           # Train runner
 │
-└── scripts/                # Entry point scripts
-    ├── process_login.py    # Run login pipeline
-    ├── process_network.py  # Run network pipeline
-    └── process_agent_logs.py  # (future)
+├── evaluation/             # Validation / offline evaluation stage
+│   ├── metrics.py
+│   └── runner.py
+│
+├── testing/                # Final holdout test stage
+│   └── runner.py
+│
+└── scripts/                # Thin CLI entrypoints
+    ├── process_login.py
+    ├── process_network.py
+    ├── process_api_traffic.py
+    ├── process_brute_force_https.py
+    ├── train_tabular.py
+    ├── evaluate_tabular.py
+    └── test_tabular.py
 ```
 
 ## Design Principles
 
-### 1. **Modularity**
-- Core classes provide interfaces, domains implement specifics
-- Each phase (normalize, shard, feature, split) is independent
-- Easy to test and debug individual components
+### 1. **Domain-First Ownership**
+- each domain owns its full lifecycle package: `processing`, `training`, `evaluation`, `testing`
+- shared infrastructure can still live outside the domain, but the domain package is the main entry surface
 
-### 2. **Extensibility**  
-- Add new domain in 4 files: config, normalizer, feature_builder, pipeline
-- Follow template from cicids2018 domain
-- Reuse all core functionality
+### 2. **Extensibility**
+- Add new security domain in `domains/`
+- Reuse the same training/evaluation/test stack across domains
+- Move from baseline NumPy models to stronger backends later without changing processed data layout
 
 ### 3. **Reproducibility**
 - Time-based splitting (no randomness)
-- Configurable parameters stored in config
+- Processing config stored in processed directory
+- Experiment config stored in experiment directory
 - Deterministic processing order
 
 ### 4. **Scalability**
 - Hash-based sharding for parallel processing
 - Parquet format for efficient storage
-- Handles 100GB+ datasets smoothly
+- Processing and modeling are decoupled, so the same processed dataset can back multiple experiments
 
 ---
 
@@ -137,6 +160,43 @@ Time-based splitting (no data leakage):
 Ensures test data is always in the future relative to training data.
 
 ---
+
+## Training / Evaluation / Testing
+
+Once a processed dataset exists, the ML lifecycle is independent from preprocessing.
+
+### Train
+```bash
+python -m src.scripts.train_tabular \
+    --processed-dir data/processed/login \
+    --experiment-dir experiments/login_baseline \
+    --label-col login_successful \
+    --feature-blocks temporal novelty continuity familiarity outcome_pressure diversity
+```
+
+### Evaluate
+```bash
+python -m src.scripts.evaluate_tabular \
+    --processed-dir data/processed/login \
+    --experiment-dir experiments/login_baseline \
+    --label-col login_successful \
+    --split val
+```
+
+### Test
+```bash
+python -m src.scripts.test_tabular \
+    --processed-dir data/processed/login \
+    --experiment-dir experiments/login_baseline \
+    --label-col login_successful
+```
+
+The current training stack is intentionally simple:
+
+- it expects a binary numeric target column
+- it reads feature groups from `feature_manifest.json` when available
+- it trains a NumPy logistic-regression baseline
+- it writes reports and parquet predictions per split
 
 ## Running Pipelines
 

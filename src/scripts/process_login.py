@@ -7,6 +7,7 @@ Usage:
 
 import argparse
 from pathlib import Path
+
 from src.domains.login import LoginConfig, LoginPipeline
 
 
@@ -25,6 +26,13 @@ def main():
     parser.add_argument(
         "--batch-size", type=int, default=10000, help="Batch size for processing (default: 10000)"
     )
+    parser.add_argument(
+        "--feature-windows",
+        type=int,
+        nargs="+",
+        default=[1, 7, 30],
+        help="Rolling history windows in days (default: 1 7 30)",
+    )
 
     args = parser.parse_args()
 
@@ -34,6 +42,7 @@ def main():
         processed_data_dir=args.output_dir,
         num_shards=args.num_shards,
         batch_size=args.batch_size,
+        feature_windows=args.feature_windows,
     )
 
     # Run pipeline

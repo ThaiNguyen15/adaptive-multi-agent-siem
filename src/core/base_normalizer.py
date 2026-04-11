@@ -9,7 +9,7 @@ Each domain normalizer inherits and implements:
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Iterator
 import pandas as pd
 import logging
 
@@ -93,6 +93,27 @@ class BaseNormalizer(ABC):
         self.logger.info(f"Normalized to {len(normalized_df)} records")
 
         return normalized_df
+
+    def iter_normalized_chunks(self, input_path: Path, chunk_size: int) -> Iterator[pd.DataFrame]:
+        """Yield normalized chunks from one file without loading the whole file into memory."""
+        input_path = Path(input_path)
+
+        if input_path.suffix == ".csv":
+            chunk_iter = pd.read_csv(input_path, chunksize=chunk_size)
+            validated = False
+            for chunk_df in chunk_iter:
+                if not validated:
+                    self.validate_raw_schema(chunk_df)
+                    validated = True
+                normalized_df = self.normalize(chunk_df)
+                self.logger.info(
+                    f"Normalized chunk from {input_path.name}: {len(chunk_df)} -> {len(normalized_df)}"
+                )
+                yield normalized_df
+            return
+
+        # Parquet support falls back to a single in-memory batch for now.
+        yield self.process_file(input_path)
 
     def process_batch(self, input_dir: Path, pattern: str = "*.csv") -> pd.DataFrame:
         """Process all matching files in directory.

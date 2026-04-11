@@ -206,6 +206,9 @@ class LoginNormalizer(BaseNormalizer):
         df["login_successful"] = self._to_binary(df["login_successful"])
         df = df[self.STANDARD_COLUMNS]
 
+        # Strictly-past feature building depends on valid timestamps and a stable user key.
+        df = df.dropna(subset=["login_timestamp"]).copy()
+        df = df[df["user_id"] != "unknown"].copy()
         df = df.sort_values(["user_id", "login_timestamp"]).reset_index(drop=True)
 
         return df
