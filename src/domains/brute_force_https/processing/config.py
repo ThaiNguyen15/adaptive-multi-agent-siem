@@ -84,3 +84,5 @@ class BruteForceHTTPSConfig(BaseConfig):
         """Return required columns for the configured source view."""
         return self.required_columns_by_view[self.input_view]
 
+
+__all__ = ["BruteForceHTTPSConfig"]

@@ -271,3 +271,6 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
         if self.config.feature_mode == "response_only":
             return df["response_text"].fillna("")
         return df["combined_text"].fillna("")
+
+
+__all__ = ["APITrafficFeatureBuilder"]

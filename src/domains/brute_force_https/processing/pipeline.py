@@ -1,116 +1,85 @@
 """
-CICIDS 2018 network-flow pipeline orchestrator.
+HTTPS brute-force dataset pipeline orchestrator.
 """
 
 from pathlib import Path
+
 import pandas as pd
+
 from src.core.sharding import HashSharding
 from src.core.splitter import TimeBasedSplitter
-from .config import CICIDS2018Config
-from .normalizer import CICIDS2018Normalizer
-from .feature_builder import CICIDS2018FeatureBuilder
+
+from .config import BruteForceHTTPSConfig
+from .feature_builder import BruteForceHTTPSFeatureBuilder
+from .normalizer import BruteForceHTTPSNormalizer
 
 
-class CICIDS2018Pipeline:
-    """End-to-end pipeline for CICFlowMeter network-flow processing."""
+class BruteForceHTTPSPipeline:
+    """End-to-end pipeline for the CESNET HTTPS brute-force dataset."""
 
-    def __init__(self, config: CICIDS2018Config):
-        """Initialize pipeline.
-
-        Args:
-            config: CICIDS2018Config instance
-        """
+    def __init__(self, config: BruteForceHTTPSConfig):
         self.config = config
         self.config.ensure_dirs()
 
-        self.normalizer = CICIDS2018Normalizer(config)
+        self.normalizer = BruteForceHTTPSNormalizer(config)
         self.sharding = HashSharding(num_shards=config.num_shards, shard_key=config.shard_key)
-        self.feature_builder = CICIDS2018FeatureBuilder(config)
+        self.feature_builder = BruteForceHTTPSFeatureBuilder(config)
         self.splitter = TimeBasedSplitter(
             train_ratio=config.train_ratio,
             val_ratio=config.val_ratio,
             test_ratio=config.test_ratio,
-            timestamp_col="timestamp",
+            timestamp_col=config.timestamp_col,
         )
 
     def step1_normalize(self, input_dir: Path) -> pd.DataFrame:
-        """Step 1: Normalize raw network traffic logs.
-
-        Args:
-            input_dir: Directory containing raw CSV files
-
-        Returns:
-            Normalized dataframe
-        """
-        print("[Step 1] Normalizing raw network flows...")
-
+        print(f"[Step 1] Normalizing HTTPS brute-force data ({self.config.input_view})...")
         normalized_df = self.normalizer.process_batch(input_dir)
 
-        # Save normalized data
         normalized_path = self.config.processed_data_dir / "normalized.parquet"
         normalized_df.to_parquet(normalized_path, index=False, compression="snappy")
         print(f"  Saved normalized data: {normalized_path}")
-
         return normalized_df
 
     def step2_shard(self, df: pd.DataFrame) -> None:
-        """Step 2: Shard by destination port.
-
-        Args:
-            df: Normalized dataframe
-        """
-        print("[Step 2] Sharding by destination port...")
-
+        print("[Step 2] Sharding by service_key...")
         shards_dir = self.config.get_shards_dir()
         self.sharding.save_shards(df, shards_dir, format="parquet")
         print(f"  Saved shards to: {shards_dir}")
 
     def step3_build_features(self) -> None:
-        """Step 3: Build derived network-flow features for each shard."""
-        print("[Step 3] Building network-flow features...")
-
+        print("[Step 3] Building HTTPS brute-force features...")
         shards_dir = self.config.get_shards_dir()
         features_dir = self.config.get_features_dir()
-
         self.feature_builder.process_all_shards(shards_dir, features_dir)
         print(f"  Saved features to: {features_dir}")
 
     def step4_split(self) -> None:
-        """Step 4: Split into train/val/test."""
         print("[Step 4] Creating train/val/test splits...")
-
         features_dir = self.config.get_features_dir()
         splits_dir = self.config.get_splits_dir()
-
         self.splitter.split_shards(features_dir, splits_dir)
         print(f"  Saved splits to: {splits_dir}")
 
     def run(self, input_dir: Path) -> None:
-        """Run full pipeline.
-
-        Args:
-            input_dir: Directory containing raw network data
-        """
         print("\n" + "=" * 60)
-        print("CICIDS 2018 NETWORK-FLOW PROCESSING PIPELINE")
+        print("HTTPS BRUTE-FORCE PROCESSING PIPELINE")
         print("=" * 60 + "\n")
 
-        # Step 1: Normalize
         normalized_df = self.step1_normalize(input_dir)
         print(f"  → {len(normalized_df)} records\n")
 
-        # Step 2: Shard
         self.step2_shard(normalized_df)
         print()
 
-        # Step 3: Build features
         self.step3_build_features()
         print()
 
-        # Step 4: Split
         self.step4_split()
         print()
 
         print("=" * 60)
         print("PIPELINE COMPLETED SUCCESSFULLY")
         print("=" * 60)
+
+
+__all__ = ["BruteForceHTTPSPipeline"]

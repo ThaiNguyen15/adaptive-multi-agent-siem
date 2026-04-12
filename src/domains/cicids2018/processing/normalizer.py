@@ -50,6 +50,9 @@ class CICIDS2018Normalizer(BaseNormalizer):
     REQUIRED_COLUMNS_NORMALIZED = [
         "dst_port",
         "protocol",
+        "protocol_token",
+        "port_token",
+        "transport_token",
         "timestamp",
         "flow_duration",
         "tot_fwd_pkts",
@@ -110,6 +113,9 @@ class CICIDS2018Normalizer(BaseNormalizer):
 
         df["dst_port"] = df["dst_port"].astype(int)
         df["protocol"] = df["protocol"].astype(int)
+        df["protocol_token"] = df["protocol"].apply(self._protocol_token)
+        df["port_token"] = df["dst_port"].apply(self._port_token)
+        df["transport_token"] = df["protocol_token"] + "|" + df["port_token"]
 
         df["attack_family"] = df["attack_label_raw"].apply(self._map_attack_family)
         df["label_binary"] = (df["attack_family"] != "Benign").astype(int)
@@ -120,7 +126,6 @@ class CICIDS2018Normalizer(BaseNormalizer):
         if required_after:
             raise ValueError(f"Missing normalized columns: {required_after}")
 
-        # Reorder key columns first, keep the rest of the numeric flow metrics.
         priority_columns = [
             "event_id",
             "source_file",
@@ -128,6 +133,9 @@ class CICIDS2018Normalizer(BaseNormalizer):
             "timestamp",
             "dst_port",
             "protocol",
+            "protocol_token",
+            "port_token",
+            "transport_token",
             "attack_label_raw",
             "attack_family",
             "label_binary",
@@ -161,6 +169,9 @@ class CICIDS2018Normalizer(BaseNormalizer):
             "timestamp": "datetime64[ns]",
             "dst_port": "int64",
             "protocol": "int64",
+            "protocol_token": "object",
+            "port_token": "object",
+            "transport_token": "object",
             "attack_label_raw": "object",
             "attack_family": "object",
             "label_binary": "int64",
@@ -183,3 +194,30 @@ class CICIDS2018Normalizer(BaseNormalizer):
         if self.config.label_mode == "family":
             return df["attack_family"].astype(str)
         return df["attack_label_raw"].astype(str)
+
+    @staticmethod
+    def _protocol_token(protocol: int) -> str:
+        """Map protocol numbers into stable coarse transport tokens."""
+        protocol = int(protocol)
+        if protocol == 6:
+            return "tcp"
+        if protocol == 17:
+            return "udp"
+        if protocol == 1:
+            return "icmp"
+        return "other_protocol"
+
+    @staticmethod
+    def _port_token(dst_port: int) -> str:
+        """Map raw destination ports into broad service-range tokens."""
+        dst_port = int(dst_port)
+        if dst_port < 0:
+            return "invalid_port"
+        if dst_port <= 1023:
+            return "system_port"
+        if dst_port <= 49151:
+            return "registered_port"
+        return "dynamic_port"
+
+
+__all__ = ["CICIDS2018Normalizer"]

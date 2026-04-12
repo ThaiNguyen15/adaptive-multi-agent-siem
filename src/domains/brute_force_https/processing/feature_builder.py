@@ -90,3 +90,6 @@ class BruteForceHTTPSFeatureBuilder(BaseFeatureBuilder):
         derived_columns = self.get_feature_list()
         df[derived_columns] = df[derived_columns].replace([np.inf, -np.inf], np.nan).fillna(0)
         return df
+
+
+__all__ = ["BruteForceHTTPSFeatureBuilder"]

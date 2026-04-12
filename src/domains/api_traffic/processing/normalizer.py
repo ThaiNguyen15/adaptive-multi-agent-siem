@@ -321,27 +321,36 @@ class APITrafficNormalizer(BaseNormalizer):
             "response_body": response.get("body", ""),
             "request_text": request_text,
             "response_text": response_text,
-            "combined_text": f"{request_text} {response_text}".strip(),
+            "combined_text": " ".join(part for part in [request_text, response_text] if part),
             "label_known": label_known,
             "is_benign_reference": is_benign_reference,
             "label_binary": label_binary,
             "attack_type": attack_type,
         }
 
-    def _normalize_headers(self, headers: Any) -> Dict[str, str]:
-        """Normalize header keys to lower case strings."""
+    @staticmethod
+    def _normalize_headers(headers: Any) -> Dict[str, str]:
+        """Normalize request/response headers to lowercase string keys."""
         if not isinstance(headers, dict):
             return {}
-        return {str(key).strip().lower(): str(value) for key, value in headers.items()}
 
-    def _normalize_attack_type(self, attack_tag: Any) -> str:
-        """Map raw attack labels to canonical names."""
-        if attack_tag is None:
-            return "Benign"
-        normalized = str(attack_tag).strip().lower()
-        return self.ATTACK_TYPE_MAP.get(normalized, str(attack_tag).strip() or "Benign")
+        normalized = {}
+        for key, value in headers.items():
+            normalized[str(key).strip().lower()] = "" if value is None else str(value)
+        return normalized
+
+    def _normalize_attack_type(self, value: Any) -> str:
+        """Map challenge-specific attack tags into a stable label space."""
+        lowered = str(value or "Benign").strip().lower()
+        for token, label in self.ATTACK_TYPE_MAP.items():
+            if token == lowered:
+                return label
+        return self.ATTACK_TYPE_MAP.get(lowered, "Unknown")
 
     def _is_validation_file(self, input_path: Path) -> bool:
-        """Detect unlabeled validation datasets by filename."""
+        """Detect whether a file comes from the unlabeled validation split."""
         lowered = input_path.name.lower()
         return any(marker in lowered for marker in self.config.validation_name_markers)
+
+
+__all__ = ["APITrafficNormalizer"]

@@ -223,3 +223,6 @@ class BruteForceHTTPSNormalizer(BaseNormalizer):
     def _build_service_key(tls_sni: str, dst_ip: str, dst_port: int, protocol: int) -> str:
         service_name = tls_sni or dst_ip or "unknown"
         return f"{service_name}:{int(dst_port)}:{int(protocol)}"
+
+
+__all__ = ["BruteForceHTTPSNormalizer"]

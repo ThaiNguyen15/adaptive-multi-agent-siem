@@ -3,6 +3,7 @@ CICIDS 2018 network-flow domain configuration.
 """
 
 from dataclasses import dataclass, field
+
 from src.core.base_config import BaseConfig
 
 
@@ -40,3 +41,6 @@ class CICIDS2018Config(BaseConfig):
         super().__post_init__()
         assert self.shard_key == "dst_port", "CICFlowMeter subset should shard by dst_port"
         assert self.label_mode in {"binary", "family", "raw"}, "label_mode must be binary, family, or raw"
+
+
+__all__ = ["CICIDS2018Config"]

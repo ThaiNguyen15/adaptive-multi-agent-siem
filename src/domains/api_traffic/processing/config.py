@@ -3,6 +3,7 @@ API traffic domain configuration.
 """
 
 from dataclasses import dataclass, field
+
 from src.core.base_config import BaseConfig
 
 
@@ -48,3 +49,6 @@ class APITrafficConfig(BaseConfig):
             "tokenized",
             "hybrid",
         }, "text_mode must be lexical, tokenized, or hybrid"
+
+
+__all__ = ["APITrafficConfig"]
