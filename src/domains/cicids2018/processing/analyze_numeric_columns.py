@@ -81,6 +81,193 @@ def _magnitude_group(max_abs_reference: float) -> str:
     return "gt_10^6"
 
 
+def _infer_semantic_group(column_name: str) -> str:
+    """Classify one raw CICIDS2018 column into a behavior-oriented group."""
+    lowered = column_name.lower()
+
+    if lowered in {"timestamp", "label"}:
+        return "metadata_or_label"
+    if lowered in {"protocol", "dst port"}:
+        return "transport_context"
+    if "flag" in lowered:
+        return "flag_features"
+    if "iat" in lowered or "duration" in lowered or "active" in lowered or "idle" in lowered:
+        return "timing"
+    if "pkts/s" in lowered or "byts/s" in lowered:
+        return "rate"
+    if "ratio" in lowered or "share" in lowered or "imbalance" in lowered:
+        return "directionality_ratio"
+    if "init " in lowered and "win" in lowered:
+        return "signed_or_sentinel_window"
+    if "subflow" in lowered or "tot " in lowered or "totlen" in lowered:
+        return "flow_volume"
+    if "len" in lowered or "size" in lowered or "header" in lowered:
+        return "packet_shape"
+    if "pkt" in lowered or "packet" in lowered:
+        return "flow_volume"
+    return "other_numeric"
+
+
+def _recommend_transform(profile: Dict) -> str:
+    """Choose a concrete preprocessing policy for one profiled column."""
+    column_name = profile["column_name"]
+    semantic_group = profile["semantic_group"]
+    min_value = profile["min"]
+    max_value = profile["max"]
+    p95 = profile["p95"]
+    p99 = profile["p99"]
+    unique_count = profile["unique_count"]
+    unique_count_is_approximate = profile["unique_count_is_approximate"]
+    zero_ratio = profile["zero_ratio"]
+
+    lowered = column_name.lower()
+
+    if semantic_group == "metadata_or_label":
+        return "metadata_or_target_only"
+
+    if (not unique_count_is_approximate and unique_count <= 1) or min_value == max_value:
+        return "drop_constant_feature"
+
+    if unique_count <= 2 and min_value >= 0 and max_value <= 1:
+        return "keep_binary_indicator"
+
+    if semantic_group == "transport_context":
+        return "bucketize_transport_context"
+
+    if min_value < 0:
+        return "treat_negative_as_sentinel_then_scale"
+
+    if semantic_group == "flag_features":
+        if zero_ratio >= 0.95 or unique_count <= 3:
+            return "keep_indicator_and_drop_raw_count_if_sparse"
+        return "clip_then_log1p_flag_count"
+
+    if semantic_group == "directionality_ratio":
+        return "clip_ratio_then_standardize"
+
+    tail_ratio = (p99 + 1.0) / (max(p95, 0.0) + 1.0)
+    extreme_ratio = (max_value + 1.0) / (max(p99, 0.0) + 1.0)
+    is_heavy_tail = p99 > 100.0 or tail_ratio > 1.5 or extreme_ratio > 5.0
+
+    if semantic_group in {"timing", "rate", "flow_volume"} and is_heavy_tail:
+        return "clip_high_percentile_then_log1p_then_standardize"
+
+    if semantic_group == "packet_shape":
+        return "standardize_after_basic_cleaning"
+
+    if max_value <= 100.0:
+        return "keep_raw_or_standardize"
+
+    return "standardize_after_basic_cleaning"
+
+
+def _grouping_rationale(profile: Dict) -> str:
+    """Explain why the column belongs to the chosen semantic and transform groups."""
+    semantic_group = profile["semantic_group"]
+    transform = profile["transform_recommendation"]
+    range_bucket = profile["range_bucket"]
+
+    semantic_reason_map = {
+        "metadata_or_label": "Column is metadata or supervision, not a behavioral numeric feature.",
+        "transport_context": "Column describes routing or protocol context rather than flow magnitude.",
+        "flag_features": "Column represents sparse control or handshake flags.",
+        "timing": "Column measures duration or inter-arrival timing behavior.",
+        "rate": "Column is a per-second rate and is usually volatile with heavy right tail.",
+        "directionality_ratio": "Column compares forward and backward behavior and can become unstable.",
+        "signed_or_sentinel_window": "Column contains signed values that likely include sentinel semantics.",
+        "flow_volume": "Column measures counts or totals that reflect traffic volume.",
+        "packet_shape": "Column describes packet or segment size distribution.",
+        "other_numeric": "Column is numeric but does not match a strong semantic family.",
+    }
+    transform_reason_map = {
+        "metadata_or_target_only": "Keep for time split or target mapping only; do not feed raw into the model.",
+        "drop_constant_feature": "Column has no usable variance in this analyzed file.",
+        "keep_binary_indicator": "Observed values are effectively binary already.",
+        "bucketize_transport_context": "Raw identifier values are shortcut-prone; coarse buckets generalize better.",
+        "treat_negative_as_sentinel_then_scale": "Negative values should be treated carefully instead of applying direct log1p.",
+        "keep_indicator_and_drop_raw_count_if_sparse": "Presence usually matters more than exact count for sparse flags.",
+        "clip_then_log1p_flag_count": "Rare larger counts benefit from compression after clipping.",
+        "clip_ratio_then_standardize": "Ratios need clipping because small denominators can inflate them.",
+        "clip_high_percentile_then_log1p_then_standardize": "Observed tail is long enough that raw scale would dominate training.",
+        "standardize_after_basic_cleaning": "Distribution looks numeric and usable after inf handling and scaling.",
+        "keep_raw_or_standardize": "Observed range is already small and stable.",
+    }
+    return (
+        f"{semantic_reason_map.get(semantic_group, 'Column was grouped by heuristic semantic rules.')} "
+        f"Observed range bucket is `{range_bucket}`. "
+        f"{transform_reason_map.get(transform, 'Transform was selected from profile heuristics.')}"
+    )
+
+
+def _transform_steps(transform_name: str) -> List[str]:
+    """Return concrete preprocessing steps for one transform recommendation."""
+    mapping = {
+        "metadata_or_target_only": [
+            "Use only for metadata, sorting, splitting, or labels",
+            "Never feed raw values into the model matrix",
+        ],
+        "drop_constant_feature": [
+            "Drop from training features",
+            "Keep only in analysis output if needed for audit",
+        ],
+        "keep_binary_indicator": [
+            "Keep as 0/1 indicator",
+            "Skip scaling unless the downstream model requires a fully standardized matrix",
+        ],
+        "bucketize_transport_context": [
+            "Convert protocol to coarse indicators such as is_tcp or is_udp",
+            "Map dst_port to coarse buckets such as system, registered, or dynamic",
+        ],
+        "treat_negative_as_sentinel_then_scale": [
+            "Treat negative values as sentinel or invalid if domain semantics confirm that",
+            "Add validity indicator",
+            "Scale valid values with robust scaling or z-score",
+        ],
+        "keep_indicator_and_drop_raw_count_if_sparse": [
+            "Create presence indicator",
+            "Drop raw count if it remains near-binary and sparse",
+        ],
+        "clip_then_log1p_flag_count": [
+            "Clip high counts at p99 or p99.5",
+            "Apply log1p to clipped count",
+            "Optionally standardize transformed value",
+        ],
+        "clip_ratio_then_standardize": [
+            "Clip to safe upper bound using p99 or domain cap",
+            "Fill divide-by-zero artifacts safely",
+            "Standardize if fed directly to the model",
+        ],
+        "clip_high_percentile_then_log1p_then_standardize": [
+            "Replace inf or invalid values with NaN",
+            "Clip at p99 or p99.5",
+            "Apply log1p",
+            "Standardize if the downstream model is scale-sensitive",
+        ],
+        "standardize_after_basic_cleaning": [
+            "Replace inf with NaN if present",
+            "Fill or impute missing values safely",
+            "Standardize the cleaned feature",
+        ],
+        "keep_raw_or_standardize": [
+            "Keep raw value",
+            "Optionally standardize for linear models",
+        ],
+    }
+    return mapping.get(transform_name, ["Inspect distribution before training"])
+
+
+def _build_processing_recommendations(profiles: List[Dict]) -> Dict[str, Dict]:
+    """Build grouped processing policy payload for downstream use."""
+    grouped_profiles = _group_columns(profiles, "transform_recommendation")
+    recommendations: Dict[str, Dict] = {}
+    for transform_name, columns in grouped_profiles.items():
+        recommendations[transform_name] = {
+            "columns": columns,
+            "steps": _transform_steps(transform_name),
+        }
+    return recommendations
+
+
 @dataclass
 class NumericColumnAccumulator:
     """Streaming accumulator for one potentially numeric column."""
@@ -219,6 +406,9 @@ class NumericColumnAccumulator:
             "max_abs_reference": _safe_float(max_abs_reference),
             "range_bucket": _range_bucket(max_abs_reference, min_value),
             "magnitude_group": _magnitude_group(max_abs_reference),
+            "semantic_group": _infer_semantic_group(self.column_name),
+            "transform_recommendation": "",
+            "grouping_rationale": "",
             "quantiles_are_approximate": True,
         }
 
@@ -286,8 +476,15 @@ def analyze_csv(
     numeric_profiles = sorted(numeric_profiles, key=lambda item: item["column_name"].lower())
     stats_df = pd.DataFrame(numeric_profiles)
 
+    for profile in numeric_profiles:
+        profile["transform_recommendation"] = _recommend_transform(profile)
+        profile["grouping_rationale"] = _grouping_rationale(profile)
+
     range_groups = _group_columns(numeric_profiles, "range_bucket")
     magnitude_groups = _group_columns(numeric_profiles, "magnitude_group")
+    semantic_groups = _group_columns(numeric_profiles, "semantic_group")
+    transform_groups = _group_columns(numeric_profiles, "transform_recommendation")
+    processing_recommendations = _build_processing_recommendations(numeric_profiles)
 
     total_rows = profiles[0]["total_rows"] if profiles else 0
     summary = {
@@ -300,11 +497,15 @@ def analyze_csv(
         "reservoir_size_per_numeric_column": int(reservoir_size),
         "numeric_range_groups": range_groups,
         "numeric_magnitude_groups": magnitude_groups,
+        "semantic_groups": semantic_groups,
+        "transform_groups": transform_groups,
+        "processing_recommendations": processing_recommendations,
         "text_columns_not_processed": text_columns_not_processed,
         "notes": {
             "large_csv_mode": True,
             "quantiles_are_approximate": True,
             "unique_count_may_be_approximate": True,
+            "grouping_strategy": "semantic_group + observed_range + transform_recommendation",
         },
     }
 
@@ -315,6 +516,12 @@ def analyze_csv(
         json.dump(range_groups, handle, indent=2)
     with open(output_dir / "numeric_magnitude_groups.json", "w", encoding="utf-8") as handle:
         json.dump(magnitude_groups, handle, indent=2)
+    with open(output_dir / "semantic_groups.json", "w", encoding="utf-8") as handle:
+        json.dump(semantic_groups, handle, indent=2)
+    with open(output_dir / "transform_groups.json", "w", encoding="utf-8") as handle:
+        json.dump(transform_groups, handle, indent=2)
+    with open(output_dir / "processing_recommendations.json", "w", encoding="utf-8") as handle:
+        json.dump(processing_recommendations, handle, indent=2)
     with open(output_dir / "text_columns_not_processed.json", "w", encoding="utf-8") as handle:
         json.dump(text_columns_not_processed, handle, indent=2)
     with open(output_dir / "analysis_summary.json", "w", encoding="utf-8") as handle:
@@ -354,6 +561,30 @@ def _write_markdown_report(output_path: Path, summary: Dict, numeric_profiles: L
             lines.append(f"- `{column_name}`")
         lines.append("")
 
+    lines.extend(["## Semantic Groups", ""])
+    for group_name, columns in summary["semantic_groups"].items():
+        lines.append(f"### {group_name}")
+        lines.append("")
+        for column_name in columns:
+            lines.append(f"- `{column_name}`")
+        lines.append("")
+
+    lines.extend(["## Transform Groups", ""])
+    for group_name, columns in summary["transform_groups"].items():
+        lines.append(f"### {group_name}")
+        lines.append("")
+        for column_name in columns:
+            lines.append(f"- `{column_name}`")
+        lines.append("")
+
+    lines.extend(["## Processing Recommendations", ""])
+    for transform_name, payload in summary["processing_recommendations"].items():
+        lines.append(f"### {transform_name}")
+        lines.append("")
+        for step in payload["steps"]:
+            lines.append(f"- {step}")
+        lines.append("")
+
     lines.extend(["## Text Columns Not Processed", ""])
     if summary["text_columns_not_processed"]:
         for item in summary["text_columns_not_processed"]:
@@ -371,7 +602,15 @@ def _write_markdown_report(output_path: Path, summary: Dict, numeric_profiles: L
         reverse=True,
     )[:20]:
         lines.append(
-            f"- `{profile['column_name']}`: max=`{profile['max']}`, p99≈`{profile['p99']}`, range_bucket=`{profile['range_bucket']}`"
+            f"- `{profile['column_name']}`: max=`{profile['max']}`, p99≈`{profile['p99']}`, "
+            f"range_bucket=`{profile['range_bucket']}`, semantic_group=`{profile['semantic_group']}`, "
+            f"transform=`{profile['transform_recommendation']}`"
+        )
+
+    lines.extend(["", "## Sample Column Rationales", ""])
+    for profile in numeric_profiles[:20]:
+        lines.append(
+            f"- `{profile['column_name']}`: {profile['grouping_rationale']}"
         )
 
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
