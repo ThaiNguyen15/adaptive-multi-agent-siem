@@ -267,14 +267,20 @@ class APIRetrievalModel:
         if len(self.attack_vectors) == 0:
             return ["Unknown" if value else "Benign" for value in predicted_binary], np.zeros(len(vectors))
 
-        similarities = vectors @ self.attack_vectors.T
-        nearest_indices = similarities.argmax(axis=1)
-        nearest_scores = similarities.max(axis=1)
+        nearest_indices = np.zeros(len(vectors), dtype=np.int64)
+        nearest_scores = np.zeros(len(vectors), dtype=float)
+        batch_size = 4096
+        attack_vectors_t = self.attack_vectors.T
+        for start in range(0, len(vectors), batch_size):
+            end = min(start + batch_size, len(vectors))
+            similarities = vectors[start:end] @ attack_vectors_t
+            nearest_indices[start:end] = similarities.argmax(axis=1)
+            nearest_scores[start:end] = similarities.max(axis=1)
 
         attack_types = []
         for is_anomaly, nearest_index in zip(predicted_binary, nearest_indices):
             attack_types.append(self.attack_types[int(nearest_index)] if is_anomaly else "Benign")
-        return attack_types, nearest_scores.astype(float)
+        return attack_types, nearest_scores
 
     def _row_tokens(self, row: pd.Series) -> List[str]:
         """Collect stable API tokens from one row."""
