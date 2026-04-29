@@ -1,98 +1,97 @@
-# API Anomaly Detection: Data Preprocessing Phase
+# API Traffic Processing Mindset
 
-## Overview
+## Purpose
 
-This document defines the production preprocessing phase for an API anomaly detection pipeline that models HTTP requests with NLP-oriented features and text representations.
+This document defines how raw API traffic should be processed before feature extraction and modeling.
 
-The preprocessing layer is responsible for converting raw HTTP traffic into a stable, consistent, model-ready representation. Its job is not only to parse requests, but to reduce token noise, preserve attack-relevant structure, and produce endpoint-aware artifacts that can be consumed by downstream feature builders, vectorizers, and anomaly models.
+The goal is not just to parse requests. The goal is to turn noisy HTTP events into stable, repeatable, endpoint-aware records that preserve attack-relevant structure while reducing useless variation.
 
-In practice, this phase sits between raw ingestion and feature extraction:
+The processing contract is:
 
-`raw HTTP request -> parsed request object -> normalized request view -> endpoint-aware token stream -> model-ready record`
+`raw event -> parsed request -> normalized request view -> semantic representation -> model-ready record`
 
-This stage is operationally critical. If preprocessing is inconsistent, the model will learn formatting artifacts, environment-specific strings, and one-off token variants instead of learning reusable attack patterns.
+If this stage is inconsistent, downstream models will learn formatting noise, one-off literals, and environment artifacts instead of reusable behavioral patterns.
 
-## Objectives
+## Core Goals
 
-The preprocessing phase has five concrete objectives:
+The processing layer must do five things well:
 
-1. Parse raw HTTP requests into a structured internal representation.
-2. Normalize request content so semantically equivalent requests map to the same or similar token space.
-3. Reduce token variability to improve model generalization across clients, hosts, encodings, and payload styles.
-4. Extract endpoint identity at the `method + host + path` level so requests can be grouped and modeled in operational context.
-5. Produce a deterministic tokenization and transformation schema that can be versioned, tested, and reused across training and inference.
+1. Parse each raw request into a structured representation.
+2. Normalize semantically equivalent content into a stable form.
+3. Reduce token and field variability without erasing attack signals.
+4. Preserve endpoint identity so behavior is interpreted in context.
+5. Emit deterministic outputs that can be reused across training and inference.
 
-Three principles drive the design:
+## Guiding Principles
 
-- Normalization is mandatory for ML quality. Attack payloads often vary only in encoding, casing, compression, and superficial formatting.
-- Reducing token variability improves generalization. The model should learn structural attack signals, not memorize random literals.
-- Endpoint-level grouping is required. A request that is normal for one endpoint may be anomalous for another.
+- Normalization is required, not optional.
+- Endpoint context matters. A request that is normal for one endpoint may be anomalous for another.
+- Preserve both raw fidelity and normalized structure.
+- Determinism matters more than cleverness.
+- Processing must scale from Dataset 1 through Dataset 4 without changing the contract.
 
-## Input / Output Definition
+## Input Expectations
 
-### Input
+At minimum, each event should provide:
 
-The preprocessing phase accepts raw HTTP request events from packet capture reconstruction, reverse proxy logs, API gateways, WAF mirrors, or application-side request logs.
+- `raw_request` or equivalent request fields
+- `event_timestamp` if available
+- `source_id`
 
-Minimum required fields:
+For the Cisco Ariel dataset used in this repo, the practical raw shape is already partially structured:
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `raw_request` | string or bytes | Full HTTP request including request line, headers, and optional body |
-| `event_timestamp` | timestamp | Event time from the collector or source system |
-| `source_id` | string | Source stream, file, host, or sensor identifier |
+- `request.method`
+- `request.url`
+- `request.headers`
+- `request.body`
+- `request.Attack_Tag`
+- `response.status`
+- `response.headers`
+- `response.status_code`
+- `response.body`
 
-Optional but recommended fields:
+Even when the raw data is nested JSON, processing should still treat it as an ingestion problem first and a feature problem second.
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `client_ip` | string | Source IP if available |
-| `transport_protocol` | string | Typically `http` or `https` |
-| `tls_sni` | string | SNI if host header is missing or untrusted |
-| `request_id` | string | Upstream request correlation id |
+## Required Output Shape
 
-### Output
+Each processed record should expose a stable representation that downstream code can trust.
 
-The preprocessing phase emits a structured record suitable for downstream feature extraction and NLP modeling.
+Recommended fields:
 
-Core output fields:
+- `event_id`
+- `dataset_id`
+- `data_split`
+- `record_index`
+- `method`
+- `host`
+- `path_raw`
+- `path_normalized`
+- `path_template`
+- `query_string`
+- `query_pairs`
+- `query_key_set`
+- `headers_filtered`
+- `body_raw`
+- `body_normalized`
+- `endpoint_key`
+- `semantic_tokens`
+- `normalization_flags`
+- `parse_status`
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `event_id` | string | Stable event identifier |
-| `event_timestamp` | timestamp | Normalized event time |
-| `method` | string | Uppercased HTTP method |
-| `host` | string | Normalized request host |
-| `path` | string | Normalized path |
-| `query_string` | string | Normalized query string |
-| `endpoint_key` | string | `METHOD host path` |
-| `filtered_headers` | map | Whitelisted and normalized headers |
-| `body_text` | string | Decoded and normalized body |
-| `request_text` | string | Canonical request text for NLP/vectorization |
-| `token_stream` | list[string] | Tokenized representation after transformation |
-| `normalization_flags` | map | Flags describing applied transformations |
-| `parse_status` | string | `ok`, `partial`, or `invalid` |
+Optional but useful:
 
-Optional derived fields:
+- `request_text`
+- `response_text`
+- `attack_tag`
+- `content_type_bucket`
+- `body_encoding`
+- `request_ast`
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `path_template` | string | Path with dynamic segments abstracted |
-| `query_key_set` | list[string] | Sorted normalized query parameter names |
-| `content_type_bucket` | string | Normalized content type family |
-| `body_encoding` | string | `plain`, `gzip`, `deflate`, `br`, `unknown` |
+## Dataset Handling Rules
 
-## Processing Pipeline (step-by-step)
+Raw Cisco Ariel data should be processed dataset-by-dataset, not mixed together at ingestion time.
 
-The preprocessing pipeline is deterministic. The same input must always produce the same output.
-
-### 1. Ingest Cisco Ariel raw datasets
-
-For this domain, the raw source should be taken from:
-
-`data/raw/Cisco_Ariel_Uni_API_security_challenge/Datasets`
-
-Expected source artifacts:
+Expected artifacts:
 
 - `dataset_1_train.7z`
 - `dataset_1_val.7z`
@@ -103,99 +102,71 @@ Expected source artifacts:
 - `dataset_4_train.7z`
 - `dataset_4_val.7z`
 
-Processing rule:
+Rules:
 
-- unpack each archive into a deterministic staging location before parsing
-- preserve dataset id and split as first-class metadata on every emitted record
-- process datasets in ascending order `1 -> 2 -> 3 -> 4` because complexity increases by level
-- do not mix raw files from different dataset levels before normalization and schema validation
+- unpack archives into deterministic staging locations
+- attach `dataset_id` and `data_split` to every emitted record
+- process in ascending order from Dataset 1 to Dataset 4
+- validate schema stability before combining outputs across dataset levels
 
-Dataset-specific mindset:
+Dataset mindset:
 
-- `Dataset_1`: basic API traffic, fewest attacks, fewest endpoints, suitable for validating the parser and base normalization path
-- `Dataset_2`: more attacks, more endpoints, more randomization, so token normalization and endpoint grouping must be more stable
-- `Dataset_3`: same traffic family but with more complex parameters in requests, so parameter parsing and value abstraction become mandatory rather than optional
-- `Dataset_4`: most advanced traffic with redirection, more request types, deeper data access, and the widest behavioral coverage, so edge-case handling must already be production-ready
+- `Dataset_1`: validate parser behavior, normalization rules, and baseline endpoint grouping
+- `Dataset_2`: harden token normalization and endpoint-template stability
+- `Dataset_3`: improve parameter parsing and abstraction
+- `Dataset_4`: handle the full set of edge cases, redirection patterns, and broad behavioral variation
 
-Why this step exists:
+## Processing Stages
 
-- the four Cisco Ariel datasets are not equivalent difficulty levels of the same exact raw shape
-- each level introduces more variability that directly affects parsing, normalization, and feature stability
-- the preprocessing contract must hold across all four datasets, not only on the easiest one
+### 1. Ingest
 
-Output of this step:
+Start from raw archive or JSON input and convert it into immutable input records.
 
-- dataset-scoped raw artifacts ready for parsing with `dataset_id` and `data_split` attached
+Required actions:
 
-### 2. Ingest raw request event
+- derive a stable `event_id`
+- preserve source metadata
+- preserve the original raw payload for replay or audit
+- reject empty or unusable records early
 
-The pipeline receives raw bytes or text plus source metadata.
+### 2. Parse Request Structure
 
-Actions:
+Build a structured request view before tokenization.
 
-- assign or derive `event_id`
-- attach source metadata
-- preserve the original payload for audit or replay
-- reject empty payloads early if they do not meet minimum parse requirements
+Required fields to derive:
 
-Output of this step:
-
-- immutable raw input record
-
-### 3. Parse raw HTTP request
-
-The parser separates the request into:
-
-- request line
 - method
-- target URL or path
-- HTTP version
+- host
+- path
+- query string
+- query pairs
 - headers
 - body
 
-Parsing rules:
+For this dataset, the JSON already gives most of this structure. Even so, the processing code should rebuild a consistent internal representation rather than trusting raw field formatting blindly.
 
-- split header block and body at the first `\r\n\r\n` or `\n\n`
-- parse the first line as `METHOD target HTTP/version`
-- treat malformed or missing version as a partial parse, not an automatic drop
-- preserve duplicate headers where protocol semantics allow them
-- store original header order only if later forensic analysis requires it
+### 3. Normalize
 
-Why this matters:
+Normalization happens before semantic extraction.
 
-- downstream logic depends on a correct distinction between path, query, headers, and body
-- attack indicators are often field-specific
-- combining malformed components too early destroys useful structure
-
-### 4. Normalize request components
-
-Normalization is applied after parsing and before tokenization.
-
-Normalization actions:
+Required normalization steps:
 
 - uppercase HTTP method
 - lowercase host
 - lowercase header names
-- trim whitespace around header names and values
-- decode percent-encoded URL components
-- collapse duplicate slash runs in path only if the deployment treats them as equivalent
-- decode compressed bodies when `Content-Encoding` is supported
-- decode bytes into text using charset from `Content-Type`, then UTF-8 fallback, then safe replacement
-- normalize line endings in body content
+- trim surrounding whitespace
+- percent-decode URL components where safe
+- normalize body encoding and line endings
+- sort query keys when deriving set-style views
+- keep both raw and normalized values
 
-Why normalization is critical for ML models:
+Normalization must reduce noise without destroying evidence. For example, encoded SQLi, traversal, or template-injection payloads should become easier to compare across requests, but the original raw form must still be recoverable.
 
-- `SELECT`, `select`, `%53%45%4c%45%43%54`, and mixed-case variants should not become unrelated features
-- the same exploit can be wrapped in gzip, URL encoding, or mixed casing
-- without normalization, the model wastes capacity learning format noise instead of attack semantics
+### 4. Filter and Validate Headers
 
-### 5. Validate and filter headers
+Headers should be handled conservatively.
 
-Header handling is intentionally strict. Most headers are operational noise for anomaly modeling.
-
-The pipeline validates headers, then keeps only a whitelist of security-relevant or context-relevant headers.
-
-Typical whitelist:
+Recommended modeling whitelist:
 
 - `host`
 - `content-type`
@@ -208,439 +179,935 @@ Typical whitelist:
 - `x-requested-with`
 - `accept`
 
-Actions:
+Rules:
 
-- drop non-whitelisted headers from the modeling view
-- keep the full raw header map only in audit storage if needed
-- normalize repeated headers into a stable join rule
-- redact or hash sensitive values when policy requires it
+- keep the full raw header map only for audit if needed
+- use a stable join rule for repeated headers
+- redact or hash sensitive values where policy requires it
+- avoid feeding high-cardinality infrastructure headers directly into modeling
 
-Why whitelist-based filtering matters:
+### 5. Derive Endpoint Identity
 
-- high-cardinality headers inflate vocabulary size
-- infrastructure headers vary across environments and deployments
-- reducing irrelevant token diversity improves generalization and lowers inference cost
+Endpoint identity is a first-class feature, not a convenience field.
 
-### 6. Extract endpoint identity
+Use:
 
-The endpoint extraction stage derives the operational grouping key used by downstream models and baselines.
+`endpoint_key = METHOD + host + normalized_path_or_template`
 
-Endpoint key format:
+Also derive a `path_template` when dynamic segments or injected values appear.
 
-`METHOD host path`
+Why this matters:
 
-Example:
+- anomaly meaning depends on endpoint context
+- the same token pattern can be benign on one endpoint and suspicious on another
+- endpoint-aware grouping improves both detection quality and interpretability
 
-`POST api.example.com /v1/orders`
+### 6. Build Semantic Representation
 
-This step may also produce a path template:
-
-`POST api.example.com /v1/orders/{id}`
-
-Why endpoint-level grouping is required:
-
-- the same payload can be normal for `/search` and anomalous for `/admin/import`
-- token distributions differ significantly by endpoint
-- anomaly thresholds should be learned relative to endpoint behavior, not globally across all traffic
-
-### 7. Build canonical request text
-
-After normalization and filtering, the pipeline assembles a canonical request text that is stable across equivalent requests.
-
-Recommended composition:
-
-1. method
-2. host
-3. normalized path or path template
-4. normalized query keys and transformed values
-5. whitelisted header names and transformed values
-6. normalized body representation
-
-Example canonical text:
-
-```text
-POST api.example.com /v1/users query:role=<alpha> sort=<alpha> header:content-type=application/json body:{"username":"<alpha>","email":"<email>"}
-```
-
-### 8. Tokenize and transform
-
-Tokenization should preserve security-relevant delimiters and common exploit primitives.
-
-The tokenizer emits:
-
-- lexical tokens
-- structural markers
-- abstracted value classes
-- optional attack-pattern markers
-
-Typical outputs:
-
-- raw lexical tokens for stable keywords
-- normalized placeholders for variable values
-- explicit separators for path, query, headers, and body regions
-
-### 9. Emit model-ready record
-
-The final record contains:
-
-- normalized fields
-- endpoint grouping key
-- transformed token stream
-- flags that describe parse and normalization outcomes
-- dataset provenance fields such as `dataset_id` and `data_split`
-
-This output becomes the contract for feature builders and training/inference jobs.
-
-## Detailed Transformation Rules
-
-This section defines the exact transformation behavior.
-
-### Request Line Rules
-
-| Input Component | Rule | Example |
-| --- | --- | --- |
-| method | uppercase | `post` -> `POST` |
-| host | lowercase, strip default port if configured | `API.EXAMPLE.COM:443` -> `api.example.com` |
-| path | URL decode, normalize slashes if allowed | `/v1/%75sers//123` -> `/v1/users/123` |
-| query string | parse into key-value pairs, normalize keys, transform values | `A=1&b=Admin` -> `a=<int>&b=<alpha>` |
-
-### Header Rules
-
-| Rule | Behavior |
-| --- | --- |
-| header names | lowercase and trim |
-| non-whitelisted headers | removed from modeling view |
-| repeated headers | join using a deterministic delimiter such as `;` |
-| header values | trim, decode if encoded, redact or hash if sensitive |
-
-### Body Rules
-
-| Condition | Behavior |
-| --- | --- |
-| `Content-Encoding: gzip` | decompress before parsing |
-| `Content-Type: application/json` | parse as JSON if valid, then canonicalize |
-| `Content-Type: application/x-www-form-urlencoded` | parse as key-value pairs |
-| `Content-Type: text/*` | normalize whitespace and casing policy |
-| unsupported binary body | replace with a stable binary placeholder and length metadata |
-
-### Value Abstraction Rules
-
-Replace high-variability literals with stable classes where possible.
-
-| Value Pattern | Output Token |
-| --- | --- |
-| integer | `<int>` |
-| float | `<float>` |
-| UUID | `<uuid>` |
-| email | `<email>` |
-| long hex string | `<hex>` |
-| base64-like string | `<base64>` |
-| alpha-only word | `<alpha>` if value identity is not important |
-| mixed alphanumeric id | `<id>` |
-| timestamp/date | `<timestamp>` |
-| URL value | `<url>` |
-| SQL-like fragment | `<sql_pattern>` |
-| script-like fragment | `<script_pattern>` |
-
-This is one of the main mechanisms for reducing token variability. It prevents the model from overfitting to request-specific values while preserving attack shape.
-
-## Endpoint Extraction Logic
-
-Endpoint extraction is performed after method, host, and path normalization.
-
-### Endpoint key construction
-
-Base key:
-
-`endpoint_key = METHOD + " " + normalized_host + " " + normalized_path`
-
-Example:
-
-```text
-PUT api.example.com /v2/profile/update
-```
-
-### Path templating
-
-When path segments are likely dynamic identifiers, convert them into placeholders for grouping and generalization.
-
-Templating candidates:
-
-- numeric ids
-- UUIDs
-- long hashes
-- opaque mixed-case tokens
+After structure and normalization are stable, convert the request into semantic units.
 
 Examples:
 
-| Raw Path | Path Template |
-| --- | --- |
-| `/v1/orders/12345` | `/v1/orders/{id}` |
-| `/v1/orders/550e8400-e29b-41d4-a716-446655440000` | `/v1/orders/{uuid}` |
-| `/download/4f9a91bcaa12ef99` | `/download/{token}` |
+- method tokens
+- path-segment tokens
+- path-template tokens
+- query-key tokens
+- body-shape tokens
+- header-presence tokens
+- encoding flags
+- attack-pattern indicators such as traversal, SQL keywords, template markers, script markers, or log-forging separators
 
-### Grouping strategy
+This stage should capture meaning, not just text fragments.
 
-Use both forms when needed:
+## Worked Example: Raw Request -> Processed Request
 
-- `endpoint_key_raw` for exact routing context
-- `endpoint_key_template` for generalized endpoint statistics
+The mindset should always be explainable on a single concrete request.
 
-Operational guidance:
-
-- use template grouping for baseline behavior modeling
-- use raw grouping when exact endpoint matching is important for alert investigation
-
-## Design Decisions & Rationale
-
-### Normalize before feature extraction
-
-Feature extraction on raw traffic creates sparse, unstable vocabularies. Normalization reduces representational entropy before the model sees the request.
-
-### Keep field boundaries explicit
-
-Path, query, headers, and body should not be flattened too early. Different fields carry different semantics and different attack surfaces.
-
-### Prefer whitelist filtering over blacklist filtering
-
-A blacklist is difficult to maintain and tends to leak irrelevant infrastructure noise into the feature space. A whitelist keeps the modeling surface controlled and reviewable.
-
-### Abstract values aggressively, but not blindly
-
-Identifiers, timestamps, and generated tokens usually hurt generalization. However, some literal values are security-relevant and should be preserved or pattern-labeled. For example, `union select` should not be abstracted away.
-
-### Group by endpoint
-
-API behavior is endpoint-dependent. The same content type, parameter count, or token distribution can be benign for one route and suspicious for another.
-
-## Edge Cases Handling
-
-The preprocessing phase must be resilient to imperfect traffic.
-
-### Malformed requests
-
-Behavior:
-
-- attempt partial parse
-- set `parse_status=partial`
-- preserve raw payload for audit
-- emit best-effort normalized fields when possible
-
-### Missing host header
-
-Behavior:
-
-- use absolute URL host if present
-- otherwise fallback to TLS SNI or source metadata if policy allows
-- if still unavailable, set `host=unknown`
-
-### Unsupported compression
-
-Behavior:
-
-- keep body as undecoded bytes summary
-- set `body_encoding=unknown`
-- record a normalization flag
-
-### Double-encoded payloads
-
-Behavior:
-
-- decode in controlled passes up to a configured maximum
-- stop early if further decoding is unsafe or non-deterministic
-
-### Large bodies
-
-Behavior:
-
-- cap body size for NLP text generation
-- keep length metadata separately
-- optionally retain a truncated normalized preview
-
-### Sensitive data in headers or body
-
-Behavior:
-
-- redact or hash secrets such as bearer tokens, session cookies, and API keys
-- do not emit secrets into `request_text` or `token_stream`
-
-### Binary or mixed-content payloads
-
-Behavior:
-
-- do not force binary blobs into text tokenization
-- replace with stable placeholders such as `<binary_body>`
-- expose size and content-type metadata separately
-
-## Performance Considerations
-
-Preprocessing can become the dominant cost in large-scale traffic analysis if not controlled.
-
-Key considerations:
-
-- parsing and decompression must be streaming-friendly where possible
-- body normalization should enforce hard size limits
-- repeated regex passes over large payloads should be minimized
-- tokenization rules should be compiled and reused
-- whitelist filtering should happen before expensive body or header transformations when possible
-- canonicalization must be deterministic but not unnecessarily expensive
-
-Production recommendations:
-
-- precompile normalization and tokenization regex patterns
-- cache path templating decisions for hot endpoints
-- process request bodies conditionally based on content type and size
-- emit counters for parse failures, decompression failures, truncation, and redaction
-
-## Extensibility & Configuration
-
-The preprocessing phase should be configurable without changing code behavior accidentally.
-
-Recommended configuration surface:
-
-| Config Key | Purpose |
-| --- | --- |
-| `header_whitelist` | Controls headers kept in the modeling view |
-| `max_body_bytes` | Caps body size processed for text extraction |
-| `supported_content_encodings` | Defines allowed decompressors |
-| `url_decode_passes` | Limits recursive decoding |
-| `enable_path_templating` | Enables endpoint generalization |
-| `sensitive_header_policy` | `drop`, `hash`, or `redact` |
-| `value_abstraction_policy` | Controls literal-to-placeholder mapping |
-| `preserve_security_keywords` | Prevents abstraction of critical exploit tokens |
-| `emit_raw_audit_copy` | Keeps raw request for offline review |
-
-Versioning guidance:
-
-- treat preprocessing as a versioned contract
-- every rule change should increment a preprocessing version
-- models should record which preprocessing version they were trained on
-
-## Example (before/after transformation)
-
-### Raw HTTP request
-
-```http
-POST /V1/Users/%32%31/profile?id=98765&role=Admin&redirect=https%3A%2F%2Fevil.example%2Fcb HTTP/1.1
-Host: API.EXAMPLE.COM
-User-Agent: Mozilla/5.0
-Content-Type: application/json
-Content-Encoding: gzip
-X-Trace-Id: 3f8c8ab2-2a11-49fd-8a18-7713b55d1111
-Authorization: Bearer eyJhbGciOi...
-
-<gzip body bytes>
-```
-
-Decoded body:
+Example raw event from `dataset_1_train_first_1000.json`:
 
 ```json
 {
-  "username": "AdminUser",
-  "comment": "<ScRiPt>alert(1)</ScRiPt>",
-  "profileId": "550e8400-e29b-41d4-a716-446655440000"
+  "request": {
+    "headers": {
+      "Host": "127.0.0.1:5000",
+      "User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:24.0) Gecko/20100101 Firefox/24.0",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Accept": "*/*",
+      "Connection": "keep-alive",
+      "Accept-Language": "de",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-Mode": "same-origin",
+      "Sec-Fetch-User": "?1",
+      "Sec-Fetch-Dest": "document",
+      "Set-Cookie": "['ck=<long_value>; Domain=localhost:5000; Expires=Wed, 21 Dec 2022 18:12:16 GMT', 'uu=<long_value>; Domain=localhost:5000; Expires=Tue, 06 Dec 2022 18:12:16 GMT', 'session=d1642031-df8b-4857-8e78-d9582228031e; Expires=Mon, 21 Nov 2022 18:42:16 GMT']",
+      "Date": "Mon, 21 Nov 2022 18:12:16 GMT",
+      "Cookie": "username=<very_long_payload>; username=<second_payload>"
+    },
+    "method": "GET",
+    "url": "http://127.0.0.1:5000/cookielogin",
+    "body": "",
+    "Attack_Tag": "Cookie Injection"
+  },
+  "response": {
+    "status": "200 OK",
+    "headers": {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Length": "105"
+    },
+    "status_code": 200,
+    "body": "<h1>Logged in as Cedric</h1><form method='POST'><input type='submit' name='logout' value='Logout'></form>"
+  }
 }
 ```
 
-### After preprocessing
+This example is useful because it shows the central processing problem:
 
-#### Structured fields
+- many raw fields exist
+- some fields are useful for modeling
+- some fields are only operational noise
+- some values are dynamic and must be abstracted
+- the attack meaning is concentrated in a specific field, not across the entire request equally
 
-| Field | Value |
-| --- | --- |
-| `method` | `POST` |
-| `host` | `api.example.com` |
-| `path` | `/v1/users/21/profile` |
-| `path_template` | `/v1/users/{id}/profile` |
-| `query_string` | `id=<int>&redirect=<url>&role=<alpha>` |
-| `endpoint_key` | `POST api.example.com /v1/users/21/profile` |
-| `endpoint_key_template` | `POST api.example.com /v1/users/{id}/profile` |
-| `filtered_headers` | `content-type=application/json`, `content-encoding=gzip`, `user-agent=mozilla/5.0`, `authorization=<redacted>` |
-| `body_text` | `{"username":"<alpha>","comment":"<script_pattern>","profileid":"<uuid>"}` |
+### Step 1: Preserve Raw Event
 
-#### Canonical request text
+Do not mutate or overwrite the original structure.
+
+Keep:
+
+- the full raw event
+- original header names and values
+- original URL string
+- original body
+- original response body if later audit is needed
+
+Why:
+
+- audit and replay need the original payload
+- later normalization bugs are easier to detect when raw data is preserved
+- attack evidence may be lost if only normalized output is kept
+
+### Step 2: Build Parsed Request View
+
+From the raw event above, derive:
+
+```json
+{
+  "method": "GET",
+  "scheme": "http",
+  "host": "127.0.0.1:5000",
+  "path_raw": "/cookielogin",
+  "query_string_raw": "",
+  "headers_raw": {
+    "Host": "127.0.0.1:5000",
+    "User-Agent": "Mozilla/5.0 ...",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept": "*/*",
+    "Connection": "keep-alive",
+    "Accept-Language": "de",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-Mode": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Sec-Fetch-Dest": "document",
+    "Set-Cookie": "[...]",
+    "Date": "Mon, 21 Nov 2022 18:12:16 GMT",
+    "Cookie": "username=<payload>; username=<payload>"
+  },
+  "body_raw": ""
+}
+```
+
+At this stage, the goal is only structural separation.
+
+### Step 3: Remove Fields That Are Not Needed for Modeling
+
+This is where many pipelines fail. They keep too much.
+
+For anomaly detection on API traffic, not every field should enter the modeling view.
+
+For the example above:
+
+Keep in modeling view:
+
+- `method`
+- `host`
+- `path`
+- `accept`
+- `accept-encoding`
+- `user-agent` only if you explicitly want client-behavior context
+- `cookie`
+- `response.status_code` only if response-side features are allowed
+
+Drop from modeling view:
+
+- `connection`
+- `accept-language`
+- `sec-fetch-site`
+- `sec-fetch-mode`
+- `sec-fetch-user`
+- `sec-fetch-dest`
+- `date`
+- raw `set-cookie` unless response-cookie behavior is part of the task
+
+Why these are dropped:
+
+- they are browser or transport noise
+- they are high-variability and low-semantic for attack detection
+- they increase vocabulary size without improving attack discrimination
+
+Important distinction:
+
+- dropped from modeling view does not mean deleted from raw storage
+- raw storage and model view are different layers
+
+### Step 4: Normalize Useful Fields
+
+Convert the same request into a stable form:
+
+```json
+{
+  "method": "GET",
+  "host": "127.0.0.1:5000",
+  "path_normalized": "/cookielogin",
+  "query_pairs": [],
+  "headers_filtered": {
+    "accept": "*/*",
+    "accept-encoding": "gzip, deflate, br",
+    "cookie": "username=<payload>; username=<payload>",
+    "host": "127.0.0.1:5000",
+    "user-agent": "mozilla/firefox"
+  },
+  "body_normalized": ""
+}
+```
+
+Normalization rules used here:
+
+- lowercase header names
+- trim header whitespace
+- normalize `User-Agent` into a family bucket instead of keeping the full literal string
+- preserve cookie structure but do not keep opaque payload bytes as-is in the modeling view
+
+## Dynamic Value Standardization
+
+Dynamic values should be treated like variables in code.
+
+The model should learn:
+
+- where the variable appears
+- what type of variable it is
+- whether its structure is suspicious
+
+The model should not memorize:
+
+- exact session IDs
+- exact timestamps
+- exact random tokens
+- exact encoded blobs
+
+Examples of dynamic-to-static conversion:
+
+- UUID -> `<UUID>`
+- integer id -> `<INT>`
+- long random string -> `<RAND>`
+- base64-like blob -> `<B64>`
+- date/time -> `<DATETIME>`
+- email -> `<EMAIL>`
+- IP -> `<IP>`
+- hash-like token -> `<HASH>`
+- path parameter value -> `{PATH_VAR}`
+- query parameter value -> `{QUERY_VAL}`
+- cookie value -> `{COOKIE_VAL}`
+
+For the cookie injection example, the key standardization idea is:
 
 ```text
-POST api.example.com /v1/users/{id}/profile query:id=<int> role=<alpha> redirect=<url> header:content-type=application/json header:user-agent=mozilla/5.0 body:{"username":"<alpha>","comment":"<script_pattern>","profileid":"<uuid>"}
+Cookie: username=<very_long_payload>; username=<second_payload>
 ```
 
-#### Token stream
+becomes
 
 ```text
-[
-  "POST",
-  "api.example.com",
-  "/v1/users/{id}/profile",
-  "query:id",
-  "<int>",
-  "query:role",
-  "<alpha>",
-  "query:redirect",
-  "<url>",
-  "header:content-type",
-  "application/json",
-  "header:user-agent",
-  "mozilla/5.0",
-  "body:username",
-  "<alpha>",
-  "body:comment",
-  "<script_pattern>",
-  "body:profileid",
-  "<uuid>"
-]
+cookie: username={COOKIE_VAL_B64_SUSPICIOUS}; username={COOKIE_VAL_SERIALIZED}
 ```
 
-### Token mapping table
-
-| Raw Token | Normalized Output | Reason |
-| --- | --- | --- |
-| `API.EXAMPLE.COM` | `api.example.com` | host normalization |
-| `%32%31` | `21` | URL decoding |
-| `98765` | `<int>` | reduce numeric variability |
-| `Admin` | `<alpha>` | reduce lexical variability |
-| `https%3A%2F%2Fevil.example%2Fcb` | `<url>` | preserve semantic type |
-| `Bearer eyJhbGciOi...` | `<redacted>` | secret protection |
-| `<ScRiPt>alert(1)</ScRiPt>` | `<script_pattern>` | preserve attack semantics |
-| `550e8400-e29b-41d4-a716-446655440000` | `<uuid>` | abstract dynamic identifier |
-
-### Second example: SQL-style query payload
-
-#### Raw request
-
-```http
-GET /search?q=%27%20UNION%20SELECT%20password%20FROM%20users--&page=1 HTTP/1.1
-Host: shop.example.com
-Accept: application/json
-X-Debug-Trace: abc-123
-```
-
-#### After preprocessing
-
-Canonical request text:
+or, at a more general level,
 
 ```text
-GET shop.example.com /search query:q=<sql_pattern> page=<int> header:accept=application/json
+cookie: username={COOKIE_VAL}; username={COOKIE_VAL}
 ```
 
-Token mapping:
+The correct level depends on your modeling goal:
 
-| Raw Token | Normalized Output |
-| --- | --- |
-| `%27%20UNION%20SELECT%20password%20FROM%20users--` | `<sql_pattern>` |
-| `1` | `<int>` |
-| `X-Debug-Trace` | removed |
+- coarse abstraction if you want stronger generalization
+- typed abstraction if you want better interpretability and attack-family separation
 
-## Summary
+## Attack-Focused Processing
 
-The data preprocessing phase is a control surface for model quality. It determines whether the anomaly detector learns reusable request behavior or overfits to formatting noise, dynamic values, and environment artifacts.
+Some attacks are field-centric. Processing should respect that.
 
-For production use, preprocessing must be:
+Examples:
 
-- deterministic
-- endpoint-aware
-- normalization-heavy
-- token-variability aware
-- explicit about filtering and redaction
-- versioned as part of the model contract
+- `Cookie Injection` focuses primarily on the `cookie` header
+- `SQL Injection` often concentrates in query values, form fields, or path fragments
+- `Directory Traversal` often concentrates in path segments
+- `Log Forging` often concentrates in newline or separator patterns in parameters
+- template or code injection often appears in path, query, cookie, or body text
 
-If those guarantees hold, downstream NLP-based anomaly models will train on a cleaner and more operationally meaningful representation of API traffic.
+For `Cookie Injection`, the best practice is:
+
+1. Preserve the cookie header.
+2. Parse the cookie into key/value pairs.
+3. Standardize dynamic values.
+4. Emit cookie-focused semantic features.
+5. Do not let unrelated browser metadata dominate the token space.
+
+So the processed cookie should look more like:
+
+```json
+{
+  "cookies_raw": [
+    {"name": "username", "value": "<payload_1>"},
+    {"name": "username", "value": "<payload_2>"}
+  ],
+  "cookies_normalized": [
+    {"name": "username", "value_type": "encoded_serialized_blob"},
+    {"name": "username", "value_type": "encoded_serialized_blob"}
+  ],
+  "cookie_features": {
+    "cookie_count": 2,
+    "duplicate_cookie_name": true,
+    "cookie_name_set": ["username"],
+    "has_long_cookie_value": true,
+    "has_base64_like_cookie": true,
+    "has_serialized_object_pattern": true
+  }
+}
+```
+
+This is much better than feeding the entire raw cookie string into a tokenizer.
+
+## Attack Tag Handling Strategy
+
+The document should handle every attack tag explicitly.
+
+The goal is not to build seven separate pipelines. The goal is to run one common processing pipeline with tag-aware feature emphasis.
+
+For each tag, define:
+
+- primary signal location
+- what to preserve
+- what to abstract
+- what to drop from modeling view
+- what semantic features should be emitted
+
+### Benign
+
+Meaning:
+
+- normal application traffic with no known attack intent
+
+Primary signal location:
+
+- endpoint behavior
+- normal parameter patterns
+- ordinary header and body structure
+
+Handling strategy:
+
+- process with the exact same parser and normalization rules as attack traffic
+- do not create special benign-only preprocessing rules
+- use benign records to learn normal endpoint templates, parameter sets, and body shapes
+
+Keep:
+
+- endpoint key
+- path template
+- query key set
+- body structure
+- stable header presence
+
+Abstract:
+
+- IDs
+- timestamps
+- session values
+- UUIDs
+- randomized strings
+
+Drop from modeling view:
+
+- browser transport noise
+- unstable infrastructure-only headers
+
+Good semantic outputs:
+
+- endpoint template frequency
+- normal query-key combinations
+- common body-schema patterns
+
+### SQL Injection
+
+Meaning:
+
+- attack content is inserted into SQL-facing inputs so backend query logic changes
+
+Primary signal location:
+
+- query parameter values
+- form fields in body
+- JSON field values
+- sometimes path fragments
+
+Handling strategy:
+
+- parse query and body fields into key/value structure
+- percent-decode and normalize case where safe
+- preserve raw payload beside normalized payload
+- detect SQL meta-syntax, operators, comments, boolean tautologies, and query chaining patterns
+
+Keep:
+
+- query keys
+- query values in normalized and abstracted form
+- body field names
+- body field value types
+- endpoint context
+
+Abstract:
+
+- literal usernames, ids, emails, and passwords
+- numeric constants
+- quoted string constants
+
+Do not over-abstract:
+
+- SQL keywords
+- quote boundaries
+- comment markers
+- operator sequences
+- union/select/order/by/drop style patterns
+
+Drop from modeling view:
+
+- unrelated browser headers
+- unrelated response decoration unless response leakage study is intended
+
+Good semantic outputs:
+
+- `SQL_KEYWORD_SELECT`
+- `SQL_KEYWORD_UNION`
+- `SQL_COMMENT_MARKER`
+- `SQL_BOOLEAN_TAUTOLOGY`
+- `QUERY_KEY_username`
+- `BODY_FIELD_password`
+- `HAS_QUOTE_BREAKOUT`
+
+### Directory Traversal
+
+Meaning:
+
+- path navigation strings attempt to access files or directories outside the intended scope
+
+Primary signal location:
+
+- path segments
+- download target parameters
+- filename query parameters
+- occasionally body fields
+
+Handling strategy:
+
+- preserve raw path exactly
+- percent-decode path repeatedly but safely for normalized analysis
+- split path into segments
+- count traversal indicators such as `..`, encoded `..`, repeated separators, and file-target suffixes
+
+Keep:
+
+- raw path
+- normalized path
+- path segment list
+- file-like suffixes
+- endpoint key
+
+Abstract:
+
+- target file names into typed placeholders when needed
+- platform-specific absolute paths into categories such as `{UNIX_PATH}` or `{WINDOWS_PATH}`
+
+Do not abstract away:
+
+- `../`
+- `..\\`
+- repeated traversal depth
+- sensitive filename markers like `passwd`, `shadow`, `windows.ini`
+
+Drop from modeling view:
+
+- unrelated cookies or browser metadata if not part of the exploit surface
+
+Good semantic outputs:
+
+- `PATH_TRAVERSAL_MARKER`
+- `TRAVERSAL_DEPTH_5_PLUS`
+- `TARGET_FILE_PASSWD`
+- `TARGET_FILE_WINDOWS_INI`
+- `ENCODED_TRAVERSAL`
+
+### Remote Code Execution (RCE)
+
+Meaning:
+
+- attacker-controlled input attempts to cause server-side command or code execution
+
+Primary signal location:
+
+- path payloads
+- query values
+- body values
+- sometimes cookies or custom headers
+
+Handling strategy:
+
+- normalize encoding aggressively but preserve raw content
+- detect template execution syntax, shell syntax, function-call syntax, import or exec markers, and command separators
+- separate command-like content from ordinary text
+
+Keep:
+
+- raw payload
+- normalized payload
+- payload location such as path, query, body, or cookie
+- endpoint key
+
+Abstract:
+
+- command arguments
+- file paths inside commands
+- specific usernames or hostnames
+
+Do not abstract away:
+
+- execution verbs like `exec`, `eval`, `system`, `os.system`, `subprocess`
+- shell separators like `;`, `&&`, `|`, backticks
+- template execution markers like `{{ ... }}`
+- import and function-call structure
+
+Drop from modeling view:
+
+- unrelated client noise
+
+Good semantic outputs:
+
+- `RCE_EXEC_FUNC`
+- `RCE_TEMPLATE_EXPR`
+- `RCE_SHELL_SEPARATOR`
+- `RCE_IMPORT_OS`
+- `PAYLOAD_LOCATION_PATH`
+- `PAYLOAD_LOCATION_BODY`
+
+### Cookie Injection
+
+Meaning:
+
+- attacker injects cookie values not legitimately issued for the current session or identity
+
+Primary signal location:
+
+- `cookie` header
+- sometimes `set-cookie` response patterns if response-aware processing is enabled
+
+Handling strategy:
+
+- parse cookie header into separate name/value pairs
+- preserve duplicate cookie names
+- type the cookie values rather than learning full opaque strings
+- emphasize cookie names, counts, repetition, value length, encoding style, and serialization patterns
+
+Keep:
+
+- cookie names
+- cookie duplication behavior
+- cookie value type
+- endpoint key
+
+Abstract:
+
+- long cookie payloads into typed placeholders
+- session ids into `<UUID>` or `<SESSION_TOKEN>`
+- base64-like blobs into `<B64>`
+
+Do not abstract away:
+
+- duplicate cookie keys
+- unusual cookie count
+- suspicious serialized-object patterns
+- mismatch between endpoint and cookie structure
+
+Drop from modeling view:
+
+- `sec-fetch-*`
+- `date`
+- `connection`
+
+Good semantic outputs:
+
+- `COOKIE_NAME_username`
+- `COOKIE_DUPLICATE_NAME`
+- `COOKIE_VAL_B64`
+- `COOKIE_VAL_SERIALIZED_OBJECT_LIKE`
+- `COOKIE_COUNT_2_PLUS`
+
+### Cross Site Scripting (XSS)
+
+Meaning:
+
+- attacker injects client-side executable markup or script that later runs in a browser context
+
+Primary signal location:
+
+- path payloads
+- query values
+- form values
+- JSON string fields
+
+Handling strategy:
+
+- preserve raw encoded payload
+- decode HTML and percent encodings into a normalized analysis view
+- detect script tags, event handlers, javascript URIs, DOM-breaking sequences, and HTML tag injection patterns
+
+Keep:
+
+- field location
+- raw payload
+- normalized payload
+- endpoint key
+
+Abstract:
+
+- benign surrounding text
+- literal constant strings that do not affect the exploit structure
+
+Do not abstract away:
+
+- `<script>`
+- `onerror=`
+- `onload=`
+- `javascript:`
+- tag open/close structure
+- quote breakout markers
+
+Drop from modeling view:
+
+- unrelated cookies or headers unless the endpoint behavior needs them
+
+Good semantic outputs:
+
+- `XSS_SCRIPT_TAG`
+- `XSS_EVENT_HANDLER`
+- `XSS_JS_URI`
+- `XSS_HTML_BREAKOUT`
+- `PAYLOAD_LOCATION_QUERY`
+
+### Log4J
+
+Meaning:
+
+- attacker injects Log4Shell-style lookup expressions that may trigger remote resolution and code execution in vulnerable Java logging paths
+
+Primary signal location:
+
+- path
+- query values
+- headers such as `user-agent`, `x-forwarded-for`, or custom headers
+- body fields
+
+Handling strategy:
+
+- preserve raw `${...}` expressions
+- normalize nested or obfuscated lookup syntax when possible
+- detect JNDI markers, protocol specifiers, and lookup nesting
+- record the field location because Log4J payloads often hide in headers
+
+Keep:
+
+- payload location
+- raw lookup string
+- normalized lookup string
+- endpoint key
+
+Abstract:
+
+- external hostnames into `<REMOTE_HOST>`
+- callback paths into typed placeholders
+
+Do not abstract away:
+
+- `${`
+- `}`
+- `jndi:`
+- `ldap:`, `rmi:`, `dns:`, `http:`
+- nested variable expansion structure
+
+Drop from modeling view:
+
+- unrelated browser headers that do not carry payloads
+
+Good semantic outputs:
+
+- `LOG4J_LOOKUP_EXPR`
+- `LOG4J_JNDI`
+- `LOG4J_PROTOCOL_LDAP`
+- `LOG4J_NESTED_LOOKUP`
+- `PAYLOAD_IN_HEADER_USER_AGENT`
+
+### Log Forging
+
+Meaning:
+
+- attacker injects content that makes generated logs appear to contain fake records, broken structure, or misleading identities
+
+Primary signal location:
+
+- query values
+- body fields
+- path fragments
+- headers that are later logged by the server
+
+Handling strategy:
+
+- preserve newline and separator characters in raw view
+- create a normalized structural view that marks CR, LF, tab, delimiter, and log-prefix patterns
+- detect timestamp-like fragments, fake severity prefixes, and multi-line injection structure
+
+Keep:
+
+- raw text with newline markers preserved
+- normalized text with explicit control-character tokens
+- payload location
+- endpoint key
+
+Abstract:
+
+- dynamic names, ids, or values inside the forged content
+
+Do not abstract away:
+
+- `\r`
+- `\n`
+- log prefix markers
+- fake timestamp skeletons
+- severity-like prefixes such as `INFO`, `WARN`, `ERROR`
+
+Drop from modeling view:
+
+- unrelated static headers if they are not part of the logged fields
+
+Good semantic outputs:
+
+- `LOG_FORGING_CRLF`
+- `LOG_FORGING_FAKE_PREFIX`
+- `LOG_FORGING_TIMESTAMP_SKELETON`
+- `LOG_FORGING_MULTILINE`
+
+## Tag-to-Field Priority Map
+
+When processing a request, the system should know where to focus first.
+
+- `SQL Injection`: query, form body, JSON body, path
+- `Directory Traversal`: path, filename query, download target body field
+- `RCE`: path, query, body, cookie
+- `Cookie Injection`: cookie
+- `XSS`: path, query, body
+- `Log4J`: headers, query, path, body
+- `Log Forging`: query, body, path, logged headers
+
+This priority map should influence semantic extraction, but it should not disable the rest of the common pipeline.
+
+## Raw -> Reduced -> Abstracted Example
+
+Using the same request, the processing should conceptually move through three views.
+
+### View A: Raw
+
+```text
+Cookie: username=gASVyQAAAA...; username=gASVKgAAAA...
+User-Agent: Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:24.0) Gecko/20100101 Firefox/24.0
+Connection: keep-alive
+Sec-Fetch-Site: none
+Date: Mon, 21 Nov 2022 18:12:16 GMT
+```
+
+### View B: Reduced Modeling View
+
+```text
+method=GET
+host=127.0.0.1:5000
+path=/cookielogin
+cookie=username=<payload>; username=<payload>
+accept=*/*
+accept-encoding=gzip, deflate, br
+user-agent-family=mozilla/firefox
+```
+
+### View C: Abstracted Semantic View
+
+```text
+METHOD_GET
+ENDPOINT_/cookielogin
+HEADER_COOKIE_PRESENT
+COOKIE_NAME_username
+COOKIE_DUPLICATE_NAME
+COOKIE_VAL_ENCODED
+COOKIE_VAL_LONG
+COOKIE_VAL_SERIALIZED_OBJECT_LIKE
+UA_BROWSER
+UA_FIREFOX
+```
+
+This final view is what the model should mostly learn from.
+
+## Static Template Construction
+
+One of the best practices from log parsing also applies here:
+
+- keep the stable words
+- abstract the changing words
+
+Examples:
+
+- `/orders/12345` -> `/orders/{PATH_VAR}`
+- `/user/alice/profile` -> `/user/{PATH_VAR}/profile`
+- `?username=admin&password=123456` -> `?username={QUERY_VAL}&password={QUERY_VAL}`
+- `session=d1642031-df8b-4857-8e78-d9582228031e` -> `session={UUID}`
+- `username=gASVyQAAAA...` -> `username={COOKIE_VAL_B64}`
+
+For API traffic, this is the equivalent of replacing variables in source code with symbolic placeholders.
+
+The stable template is what defines behavior.
+The variable type is what refines the behavior.
+
+## What to Remove vs What to Abstract
+
+This distinction should be explicit.
+
+Remove when the field is mostly transport or browser noise:
+
+- `connection`
+- `sec-fetch-*`
+- `date`
+- unstable one-off infrastructure headers
+
+Abstract when the field is useful but too dynamic in raw form:
+
+- cookie values
+- auth tokens
+- UUIDs
+- IDs in path or query
+- timestamps
+- long encoded payloads
+- randomized filenames
+
+Keep raw and normalized side by side when the field is security-relevant:
+
+- path
+- query
+- cookie
+- authorization
+- body
+
+## Minimum Explainability Standard
+
+For every processed field, the pipeline should be able to answer:
+
+1. Why was this field kept?
+2. Why was this field dropped?
+3. Why was this value abstracted?
+4. What stable semantic meaning remains after abstraction?
+
+If the pipeline cannot explain those four points, the preprocessing is still too weak.
+
+## Recommended Internal Representation
+
+If you want a hierarchical view, use an HTTP request tree rather than a source-code AST.
+
+Example structure:
+
+- request
+- method
+- host
+- path
+- path segments
+- query
+- query key/value pairs
+- headers
+- body
+- response metadata
+
+This supports downstream semantic extraction and graph construction without forcing code-analysis tools onto log-like data.
+
+## Graph Mindset
+
+If graph features are needed, the useful graph is a request/entity graph, not a code CFG.
+
+Useful node types:
+
+- request
+- endpoint
+- query key
+- body field
+- semantic pattern
+- session or client entity if available
+
+Useful edge types:
+
+- request -> endpoint
+- request -> query key
+- request -> body field
+- request -> semantic token
+- endpoint -> common template
+
+Graph construction should come after parsing and normalization, not before.
+
+## Label Handling
+
+`Attack_Tag` is valuable for supervision and evaluation, but it should not control parsing logic.
+
+Rules:
+
+- do not make the parser label-aware
+- do not let labels change normalization behavior
+- use labels for evaluation, diagnostics, supervised experiments, and leakage checks
+
+## Best Practices
+
+- Preserve raw, normalized, and abstracted views side by side.
+- Keep the pipeline deterministic.
+- Validate on Dataset 1 before scaling out.
+- Add new normalization rules only when they reduce noise without erasing behavior.
+- Prefer endpoint-aware features over global bag-of-tokens features.
+- Separate parsing, normalization, semantic extraction, and feature building into clear stages.
+- Keep schema validation strict and early.
+
+## Anti-Patterns
+
+- Treating API traffic as plain free text.
+- Mixing all dataset levels before validating processing stability.
+- Collapsing raw and normalized values into one lossy field.
+- Using source-code AST or CFG tools directly on HTTP data.
+- Overusing raw header values or other high-cardinality literals.
+- Baking labels into preprocessing decisions.
+
+## Operational Standard
+
+The processing layer is production infrastructure for the modeling stack.
+
+That means:
+
+- every transformation should be explainable
+- every emitted field should have a clear contract
+- every normalization rule should be deterministic
+- every dataset level should pass through the same conceptual pipeline
+
+If a transformation cannot be justified in terms of stability, generalization, or preservation of attack-relevant structure, it probably does not belong in preprocessing.

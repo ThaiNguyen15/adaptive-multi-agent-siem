@@ -8,10 +8,11 @@ flat event-level schema with modality-separated text fields.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import pandas as pd
 
@@ -23,15 +24,25 @@ class APITrafficNormalizer(BaseNormalizer):
 
     STANDARD_COLUMNS = [
         "event_id",
+        "dataset_id",
+        "data_split",
         "source_file",
         "record_index",
         "event_timestamp",
         "method",
         "host",
         "url",
+        "path_raw",
         "path",
+        "path_normalized",
+        "path_template",
         "query_string",
+        "query_pairs",
+        "query_key_set",
+        "headers_filtered",
         "request_body",
+        "body_raw",
+        "body_normalized",
         "request_header_names",
         "request_header_values",
         "request_header_count",
@@ -44,6 +55,10 @@ class APITrafficNormalizer(BaseNormalizer):
         "status",
         "status_code",
         "response_body",
+        "endpoint_key",
+        "semantic_tokens",
+        "normalization_flags",
+        "parse_status",
         "request_text",
         "response_text",
         "combined_text",
@@ -77,13 +92,23 @@ class APITrafficNormalizer(BaseNormalizer):
         df = df[self.STANDARD_COLUMNS]
 
         text_columns = [
+            "dataset_id",
+            "data_split",
             "source_file",
             "method",
             "host",
             "url",
+            "path_raw",
             "path",
+            "path_normalized",
+            "path_template",
             "query_string",
+            "query_pairs",
+            "query_key_set",
+            "headers_filtered",
             "request_body",
+            "body_raw",
+            "body_normalized",
             "request_header_names",
             "request_header_values",
             "response_header_names",
@@ -93,6 +118,10 @@ class APITrafficNormalizer(BaseNormalizer):
             "content_type",
             "status",
             "response_body",
+            "endpoint_key",
+            "semantic_tokens",
+            "normalization_flags",
+            "parse_status",
             "request_text",
             "response_text",
             "combined_text",
@@ -130,14 +159,24 @@ class APITrafficNormalizer(BaseNormalizer):
         return {
             "event_id": "object",
             "source_file": "object",
+            "dataset_id": "object",
+            "data_split": "object",
             "record_index": "int64",
             "event_timestamp": "datetime64[ns, UTC]",
             "method": "object",
             "host": "object",
             "url": "object",
+            "path_raw": "object",
             "path": "object",
+            "path_normalized": "object",
+            "path_template": "object",
             "query_string": "object",
+            "query_pairs": "object",
+            "query_key_set": "object",
+            "headers_filtered": "object",
             "request_body": "object",
+            "body_raw": "object",
+            "body_normalized": "object",
             "request_header_names": "object",
             "request_header_values": "object",
             "request_header_count": "int64",
@@ -150,6 +189,10 @@ class APITrafficNormalizer(BaseNormalizer):
             "status": "object",
             "status_code": "int64",
             "response_body": "object",
+            "endpoint_key": "object",
+            "semantic_tokens": "object",
+            "normalization_flags": "object",
+            "parse_status": "object",
             "request_text": "object",
             "response_text": "object",
             "combined_text": "object",
@@ -170,6 +213,9 @@ class APITrafficNormalizer(BaseNormalizer):
     def process_batch(self, input_dir: Path, pattern: str = "*") -> pd.DataFrame:
         """Process all supported API traffic files in a directory."""
         input_dir = Path(input_dir)
+        if input_dir.is_file():
+            return self.process_file(input_dir)
+
         file_paths = sorted(
             [
                 path
@@ -183,12 +229,19 @@ class APITrafficNormalizer(BaseNormalizer):
             return pd.DataFrame(columns=self.STANDARD_COLUMNS)
 
         dfs = [self.process_file(file_path) for file_path in file_paths]
-        return pd.concat(dfs, ignore_index=True)
+        combined_df = pd.concat(dfs, ignore_index=True)
+        duplicate_count = int(combined_df["event_id"].duplicated().sum())
+        if duplicate_count:
+            self.logger.warning(f"Dropping {duplicate_count} duplicate API events by event_id")
+            combined_df = combined_df.drop_duplicates(subset=["event_id"], keep="first")
+        return combined_df.reset_index(drop=True)
 
     def _load_records(self, input_path: Path) -> List[Dict[str, Any]]:
         """Load raw records from a JSON file or 7z archive."""
         source_name = input_path.name
         is_validation = self._is_validation_file(input_path)
+        dataset_id = self._derive_dataset_id(input_path)
+        data_split = "validation" if is_validation else "train"
 
         if input_path.suffix.lower() == ".json":
             with open(input_path, "r", encoding="utf-8") as file_obj:
@@ -205,6 +258,8 @@ class APITrafficNormalizer(BaseNormalizer):
             self._flatten_event(
                 raw_event,
                 source_name=source_name,
+                dataset_id=dataset_id,
+                data_split=data_split,
                 record_index=index,
                 is_validation=is_validation,
             )
@@ -238,6 +293,8 @@ class APITrafficNormalizer(BaseNormalizer):
         self,
         raw_event: Dict[str, Any],
         source_name: str,
+        dataset_id: str,
+        data_split: str,
         record_index: int,
         is_validation: bool,
     ) -> Dict[str, Any]:
@@ -246,9 +303,38 @@ class APITrafficNormalizer(BaseNormalizer):
         response = raw_event.get("response", {}) or {}
         request_headers = self._normalize_headers(request.get("headers", {}))
         response_headers = self._normalize_headers(response.get("headers", {}))
+        filtered_headers = self._filter_headers(request_headers)
 
         parsed_url = urlsplit(str(request.get("url", "")))
         attack_type = self._normalize_attack_type(request.get("Attack_Tag"))
+        method = str(request.get("method", "UNKNOWN") or "UNKNOWN").strip().upper()
+        host = str(request_headers.get("host", parsed_url.netloc) or "unknown").strip().lower()
+        path_raw = parsed_url.path or "/"
+        path_normalized = self._normalize_path(path_raw)
+        path_template = self._template_path(path_normalized)
+        query_string = parsed_url.query
+        query_pairs = self._normalize_query_pairs(query_string)
+        query_key_set = sorted({key for key, _ in query_pairs})
+        body_raw = "" if request.get("body") is None else str(request.get("body", ""))
+        body_normalized = self._normalize_body(body_raw)
+        endpoint_key = f"{method} {host} {path_template}"
+        normalization_flags = self._build_normalization_flags(
+            path_raw=path_raw,
+            path_normalized=path_normalized,
+            body_raw=body_raw,
+            body_normalized=body_normalized,
+            headers=request_headers,
+        )
+        semantic_tokens = self._build_semantic_tokens(
+            method=method,
+            host=host,
+            path_template=path_template,
+            query_key_set=query_key_set,
+            filtered_headers=filtered_headers,
+            content_type=response_headers.get("content-type", request_headers.get("content-type", "")),
+            body_normalized=body_normalized,
+        )
+        parse_status = "ok" if method != "UNKNOWN" and path_raw else "partial"
 
         if is_validation:
             label_binary = pd.NA
@@ -270,13 +356,14 @@ class APITrafficNormalizer(BaseNormalizer):
         request_text = " ".join(
             part
             for part in [
-                str(request.get("method", "UNKNOWN")),
-                request_headers.get("host", parsed_url.netloc),
-                parsed_url.path,
-                parsed_url.query,
+                method,
+                host,
+                path_template,
+                " ".join(f"{key}={value}" for key, value in query_pairs),
                 request_header_names,
-                request_header_values,
-                str(request.get("body", "")),
+                " ".join(filtered_headers.values()),
+                body_normalized,
+                " ".join(semantic_tokens),
             ]
             if part
         )
@@ -295,15 +382,25 @@ class APITrafficNormalizer(BaseNormalizer):
 
         return {
             "event_id": f"{Path(source_name).stem}:{record_index}",
+            "dataset_id": dataset_id,
+            "data_split": data_split,
             "source_file": source_name,
             "record_index": record_index,
             "event_timestamp": timestamp_value,
-            "method": request.get("method", "UNKNOWN"),
-            "host": request_headers.get("host", parsed_url.netloc),
+            "method": method,
+            "host": host,
             "url": request.get("url", ""),
-            "path": parsed_url.path,
-            "query_string": parsed_url.query,
-            "request_body": request.get("body", ""),
+            "path_raw": path_raw,
+            "path": path_normalized,
+            "path_normalized": path_normalized,
+            "path_template": path_template,
+            "query_string": query_string,
+            "query_pairs": json.dumps(query_pairs, ensure_ascii=True),
+            "query_key_set": " ".join(query_key_set),
+            "headers_filtered": json.dumps(filtered_headers, sort_keys=True, ensure_ascii=True),
+            "request_body": body_normalized,
+            "body_raw": body_raw,
+            "body_normalized": body_normalized,
             "request_header_names": request_header_names,
             "request_header_values": request_header_values,
             "request_header_count": len(request_headers),
@@ -319,6 +416,10 @@ class APITrafficNormalizer(BaseNormalizer):
             "status": response.get("status", ""),
             "status_code": response.get("status_code", -1),
             "response_body": response.get("body", ""),
+            "endpoint_key": endpoint_key,
+            "semantic_tokens": " ".join(semantic_tokens),
+            "normalization_flags": json.dumps(normalization_flags, sort_keys=True, ensure_ascii=True),
+            "parse_status": parse_status,
             "request_text": request_text,
             "response_text": response_text,
             "combined_text": " ".join(part for part in [request_text, response_text] if part),
@@ -338,6 +439,136 @@ class APITrafficNormalizer(BaseNormalizer):
         for key, value in headers.items():
             normalized[str(key).strip().lower()] = "" if value is None else str(value)
         return normalized
+
+    @staticmethod
+    def _filter_headers(headers: Dict[str, str]) -> Dict[str, str]:
+        """Keep a deterministic security-relevant header modeling view."""
+        whitelist = {
+            "host",
+            "content-type",
+            "content-length",
+            "content-encoding",
+            "user-agent",
+            "cookie",
+            "authorization",
+            "x-forwarded-for",
+            "x-requested-with",
+            "accept",
+        }
+        return {key: headers[key] for key in sorted(headers) if key in whitelist}
+
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        """Percent-decode and lightly normalize a request path."""
+        decoded = unquote(str(path or "/")).strip()
+        decoded = re.sub(r"/{2,}", "/", decoded)
+        return decoded or "/"
+
+    @staticmethod
+    def _template_path(path: str) -> str:
+        """Replace high-cardinality path segments with stable placeholders."""
+        segments = []
+        for segment in str(path or "/").split("/"):
+            if not segment:
+                continue
+            lowered = segment.lower()
+            if re.fullmatch(r"\d+", lowered):
+                segments.append("{num}")
+            elif re.fullmatch(r"[0-9a-f]{8,}", lowered) or re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f-]{13,}", lowered
+            ):
+                segments.append("{hex}")
+            elif len(segment) >= 24 and re.search(r"\d", segment) and re.search(r"[a-zA-Z]", segment):
+                segments.append("{token}")
+            else:
+                segments.append(lowered)
+        return "/" + "/".join(segments) if segments else "/"
+
+    @staticmethod
+    def _normalize_query_pairs(query_string: str) -> List[List[str]]:
+        """Decode query pairs and sort by key/value for deterministic modeling."""
+        pairs = parse_qsl(str(query_string or ""), keep_blank_values=True)
+        normalized = [[unquote(str(key)).lower().strip(), unquote(str(value)).strip()] for key, value in pairs]
+        return sorted(normalized, key=lambda item: (item[0], item[1]))
+
+    @staticmethod
+    def _normalize_body(body: str) -> str:
+        """Normalize body text without erasing payload evidence."""
+        value = unquote(str(body or ""))
+        value = value.replace("\r\n", "\n").replace("\r", "\n")
+        return value.strip()
+
+    @staticmethod
+    def _build_normalization_flags(
+        path_raw: str,
+        path_normalized: str,
+        body_raw: str,
+        body_normalized: str,
+        headers: Dict[str, str],
+    ) -> Dict[str, int]:
+        """Describe important transformations for audit and features."""
+        return {
+            "path_percent_decoded": int(path_raw != path_normalized),
+            "body_percent_decoded": int(body_raw != body_normalized),
+            "body_multiline": int("\n" in body_normalized),
+            "has_cookie": int("cookie" in headers),
+            "has_authorization": int("authorization" in headers),
+            "has_forwarded_for": int("x-forwarded-for" in headers),
+        }
+
+    @staticmethod
+    def _build_semantic_tokens(
+        method: str,
+        host: str,
+        path_template: str,
+        query_key_set: List[str],
+        filtered_headers: Dict[str, str],
+        content_type: str,
+        body_normalized: str,
+    ) -> List[str]:
+        """Build endpoint-aware semantic tokens for downstream text/vector models."""
+        text = " ".join([path_template, body_normalized]).lower()
+        host_is_ip = int(bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?", host)))
+        tokens = [
+            f"method:{method.lower()}",
+            f"host_is_ip:{host_is_ip}",
+            f"path_depth:{max(path_template.count('/') - 1, 0)}",
+        ]
+        tokens.extend(f"path:{segment}" for segment in path_template.split("/") if segment)
+        tokens.extend(f"query_key:{key}" for key in query_key_set)
+        tokens.extend(f"header:{key}" for key in sorted(filtered_headers))
+
+        content_type_lower = str(content_type or "").lower()
+        if "json" in content_type_lower:
+            tokens.append("content_type:json")
+        elif "xml" in content_type_lower:
+            tokens.append("content_type:xml")
+        elif "form" in content_type_lower:
+            tokens.append("content_type:form")
+        elif content_type_lower:
+            tokens.append("content_type:other")
+
+        pattern_tokens = {
+            "attack_sql": r"(union|select|drop|insert|update|delete|or\s+1=1|--|;)",
+            "attack_traversal": r"(\.\./|\.\.\\)",
+            "attack_xss": r"(<script|javascript:|onerror=|onload=|alert\()",
+            "attack_log4j": r"(\$\{jndi:|ldap:|rmi:|dns:)",
+            "attack_rce": r"(__globals__|__builtins__|exec\(|system\(|cmd=|powershell|/bin/sh)",
+            "attack_log_forging": r"(\\n|\\r|\n|\r)",
+        }
+        for token, pattern in pattern_tokens.items():
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                tokens.append(token)
+
+        return tokens
+
+    @staticmethod
+    def _derive_dataset_id(input_path: Path) -> str:
+        """Derive a stable dataset identifier from Cisco Ariel archive names."""
+        match = re.search(r"dataset[_-]?(\d+)", input_path.name, flags=re.IGNORECASE)
+        if match:
+            return f"dataset_{match.group(1)}"
+        return Path(input_path).stem
 
     def _normalize_attack_type(self, value: Any) -> str:
         """Map challenge-specific attack tags into a stable label space."""
