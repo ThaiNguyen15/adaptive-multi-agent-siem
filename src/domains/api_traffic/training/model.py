@@ -80,6 +80,33 @@ ATTACK_FINDING_MAP = {
 }
 
 
+SECURITY_SIGNAL_WEIGHTS = {
+    "request_contains_sql_keywords": 6,
+    "request_contains_traversal": 6,
+    "request_contains_xss": 6,
+    "request_contains_log4j": 6,
+    "request_header_contains_log4j": 6,
+    "request_contains_rce": 6,
+    "request_contains_log_forging": 8,
+    "sql_request_got_2xx": 3,
+    "traversal_request_got_2xx": 3,
+    "xss_request_got_2xx": 3,
+    "log4j_request_got_2xx": 3,
+    "rce_request_got_2xx": 3,
+    "log_forging_request_got_2xx": 3,
+}
+
+
+SEMANTIC_SIGNAL_WEIGHTS = {
+    "attack_sql": 10,
+    "attack_log_forging": 10,
+    "attack_traversal": 8,
+    "attack_xss": 8,
+    "attack_log4j": 8,
+    "attack_rce": 8,
+}
+
+
 @dataclass
 class APIRetrievalModel:
     """Hashed-vector endpoint-aware retrieval model."""
@@ -265,10 +292,13 @@ class APIRetrievalModel:
         if 200 <= status_code <= 599:
             tokens.append(f"response_status_family:{status_code // 100}xx")
 
-        tokens.extend(str(row.get("semantic_tokens", "") or "").split())
+        for token in str(row.get("semantic_tokens", "") or "").split():
+            weight = SEMANTIC_SIGNAL_WEIGHTS.get(token, 1)
+            tokens.extend([token] * weight)
         for column in STATIC_SIGNAL_COLUMNS:
             if int(row.get(column, 0) or 0) == 1:
-                tokens.append(f"flag:{column}")
+                weight = SECURITY_SIGNAL_WEIGHTS.get(column, 1)
+                tokens.extend([f"flag:{column}"] * weight)
 
         return tokens
 

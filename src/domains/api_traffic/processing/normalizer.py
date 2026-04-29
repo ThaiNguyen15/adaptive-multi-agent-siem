@@ -329,6 +329,7 @@ class APITrafficNormalizer(BaseNormalizer):
             method=method,
             host=host,
             path_template=path_template,
+            query_pairs=query_pairs,
             query_key_set=query_key_set,
             filtered_headers=filtered_headers,
             content_type=response_headers.get("content-type", request_headers.get("content-type", "")),
@@ -521,13 +522,15 @@ class APITrafficNormalizer(BaseNormalizer):
         method: str,
         host: str,
         path_template: str,
+        query_pairs: List[List[str]],
         query_key_set: List[str],
         filtered_headers: Dict[str, str],
         content_type: str,
         body_normalized: str,
     ) -> List[str]:
         """Build endpoint-aware semantic tokens for downstream text/vector models."""
-        text = " ".join([path_template, body_normalized]).lower()
+        query_text = " ".join(f"{key}={value}" for key, value in query_pairs)
+        text = " ".join([path_template, query_text, body_normalized]).lower()
         host_is_ip = int(bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?", host)))
         tokens = [
             f"method:{method.lower()}",
@@ -536,6 +539,10 @@ class APITrafficNormalizer(BaseNormalizer):
         ]
         tokens.extend(f"path:{segment}" for segment in path_template.split("/") if segment)
         tokens.extend(f"query_key:{key}" for key in query_key_set)
+        for key, value in query_pairs:
+            value_shape = APITrafficNormalizer._value_shape(value)
+            if value_shape:
+                tokens.append(f"query_value_shape:{key}:{value_shape}")
         tokens.extend(f"header:{key}" for key in sorted(filtered_headers))
 
         content_type_lower = str(content_type or "").lower()
@@ -549,18 +556,60 @@ class APITrafficNormalizer(BaseNormalizer):
             tokens.append("content_type:other")
 
         pattern_tokens = {
-            "attack_sql": r"(union|select|drop|insert|update|delete|or\s+1=1|--|;)",
+            "attack_sql": (
+                r"\bunion\b(?:\s+all)?\s+\bselect\b|"
+                r"\bselect\b\s+.+\bfrom\b|"
+                r"\b(?:drop|insert|update|delete)\b\s+\b(?:table|into|from|set)\b|"
+                r"\bor\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?|"
+                r"\bor\s+1\s*=\s*1\b|"
+                r"(?<!\*)/\*|--"
+            ),
             "attack_traversal": r"(\.\./|\.\.\\)",
             "attack_xss": r"(<script|javascript:|onerror=|onload=|alert\()",
             "attack_log4j": r"(\$\{jndi:|ldap:|rmi:|dns:)",
             "attack_rce": r"(__globals__|__builtins__|exec\(|system\(|cmd=|powershell|/bin/sh)",
-            "attack_log_forging": r"(\\n|\\r|\n|\r)",
+            "attack_log_forging": r"(%0a|%0d|\\n|\\r|\n|\r)",
         }
         for token, pattern in pattern_tokens.items():
             if re.search(pattern, text, flags=re.IGNORECASE):
                 tokens.append(token)
 
         return tokens
+
+    @staticmethod
+    def _value_shape(value: str) -> str:
+        """Bucket query values without storing high-cardinality raw payloads."""
+        value = str(value or "")
+        lowered = value.lower()
+        if not value:
+            return "empty"
+        if re.search(r"(%0a|%0d|\\n|\\r|\n|\r)", lowered):
+            return "newline"
+        if re.search(r"(<script|javascript:|onerror=|onload=|alert\()", lowered):
+            return "script"
+        if re.search(r"(\.\./|\.\.\\|%2e%2e|%252e%252e)", lowered):
+            return "traversal"
+        if re.search(r"(\$\{jndi:|ldap:|rmi:|dns:)", lowered):
+            return "lookup"
+        if re.search(r"(__globals__|__builtins__|exec\(|system\(|cmd=|powershell|/bin/sh)", lowered):
+            return "command"
+        if re.search(
+            r"\bunion\b(?:\s+all)?\s+\bselect\b|"
+            r"\bselect\b\s+.+\bfrom\b|"
+            r"\b(?:drop|insert|update|delete)\b\s+\b(?:table|into|from|set)\b|"
+            r"\bor\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?|"
+            r"\bor\s+1\s*=\s*1\b|"
+            r"(?<!\*)/\*|--",
+            lowered,
+        ):
+            return "sql"
+        if len(value) >= 32:
+            return "long"
+        if re.fullmatch(r"\d+", value):
+            return "number"
+        if re.fullmatch(r"[0-9a-fA-F-]{16,}", value):
+            return "hex"
+        return "plain"
 
     @staticmethod
     def _derive_dataset_id(input_path: Path) -> str:

@@ -15,7 +15,16 @@ import pandas as pd
 from src.core.base_feature_builder import BaseFeatureBuilder
 
 
-SQL_PATTERN = re.compile(r"(?i)(?:union|select|drop|insert|update|delete|or\s+1=1|--|;)")
+SQL_PATTERN = re.compile(
+    r"(?i)(?:"
+    r"\bunion\b(?:\s+all)?\s+\bselect\b|"
+    r"\bselect\b\s+.+\bfrom\b|"
+    r"\b(?:drop|insert|update|delete)\b\s+\b(?:table|into|from|set)\b|"
+    r"\bor\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?|"
+    r"\bor\s+1\s*=\s*1\b|"
+    r"(?<!\*)/\*|--"
+    r")"
+)
 TRAVERSAL_PATTERN = re.compile(r"(?:\.\./|\.\.\\|%2e%2e|%252e%252e)", re.IGNORECASE)
 XSS_PATTERN = re.compile(r"(?i)(?:<script|javascript:|onerror=|onload=|alert\()")
 LOG4J_PATTERN = re.compile(r"(?i)(?:\$\{jndi:|ldap:|rmi:|dns:)")
