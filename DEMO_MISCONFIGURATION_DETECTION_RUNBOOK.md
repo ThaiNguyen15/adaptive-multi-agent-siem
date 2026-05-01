@@ -22,7 +22,13 @@ curl/browser -> FastAPI demo API -> demo_misconfig/logs/api_requests.jsonl
                          demo_misconfig/alerts/alerts.jsonl + SOC console output
 ```
 
-The alert loop uses simple rule-based inference as a live-demo stand-in. Replace `detect_signal()` or `build_alert()` in `demo_misconfig/infer_alerts.py` with your trained model call when you want to connect the real model.
+The alert loop loads the trained retrieval model from:
+
+```text
+experiments/api_traffic_d1_d2_d3_d4_improved/
+```
+
+`detect_signal()` converts each live API log event into the feature shape expected by `APIRetrievalModel`, calls `model.predict_dataframe(...)`, and uses the model's `y_pred`, `y_score`, `nearest_benign_similarity`, and `predicted_attack_type` in the alert. Lightweight request-pattern checks are still used as evidence extraction and as a fallback if the model artifact cannot be loaded.
 
 ### 1. Install Demo Dependencies
 
@@ -59,6 +65,13 @@ Terminal 2:
 ```bash
 source .venv/bin/activate
 python -m demo_misconfig.infer_alerts
+```
+
+To use a different trained model artifact directory:
+
+```bash
+python -m demo_misconfig.infer_alerts \
+  --model-dir experiments/api_traffic_d1_d2_d3_d4_improved
 ```
 
 The loop reads new log lines every second from:
@@ -151,6 +164,7 @@ Finding: SQL Injection
 Summary: /orders/get/country accepted suspicious SQL Injection shaped input with HTTP 200.
 Root cause: SQL-shaped input reached an API parameter. The endpoint returned 2xx, so this is likely a misconfiguration.
 Evidence: request_contains_sql_keywords, response_status_is_2xx, suspicious_request_got_2xx
+Model: y_pred=1, y_score=0.600, nearest_benign_similarity=0.400
 Zero Trust action: Block or step-up matching requests, alert the API owner, and open a root-cause fix ticket.
 Recommended fix: Use parameterized queries and allowlisted input types.
 ```
@@ -165,25 +179,19 @@ rm -f demo_misconfig/logs/api_requests.jsonl demo_misconfig/alerts/alerts.jsonl
 
 Restart Terminal 1 and Terminal 2 before the next live demo.
 
-### 7. Where To Connect Your Trained Model
+### 7. Model Connection Point
 
-The smallest integration point is:
+The model connection is in:
 
 ```python
 # demo_misconfig/infer_alerts.py
-def detect_signal(event):
-    ...
+def detect_signal(event, model_dir=DEFAULT_MODEL_DIR):
+    model = load_model(str(model_dir))
+    model_input = _event_to_model_frame(event, fallback_attack_type)
+    prediction = model.predict_dataframe(model_input).iloc[0].to_dict()
 ```
 
-Replace the rule checks with your trained model pipeline:
-
-```python
-features = build_features_from_event(event)
-y_score = model.predict_proba(features)[0, 1]
-y_pred = y_score >= threshold
-```
-
-Then keep `build_alert()` as the SOC translation layer. That lets the live demo stay simple while the trained model owns the suspicious-request decision.
+Keep `build_alert()` as the SOC translation layer. `detect_signal()` should own model scoring, while `build_alert()` turns the score and evidence into root-cause language.
 
 ---
 
