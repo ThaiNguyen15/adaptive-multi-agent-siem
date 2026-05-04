@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
+from urllib.parse import parse_qsl, unquote_plus
 
 import numpy as np
-import pandas as pd
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 STATIC_SIGNAL_COLUMNS = [
@@ -68,6 +72,30 @@ STATIC_SIGNAL_COLUMNS = [
     "auth_or_cookie_request_got_2xx",
 ]
 
+RESPONSE_CONTEXT_COLUMNS = {
+    "response_status_is_2xx",
+    "response_status_is_3xx",
+    "response_status_is_4xx",
+    "response_status_is_5xx",
+    "response_has_error_keyword",
+    "response_is_json_like",
+    "response_has_body",
+    "response_content_type_is_json",
+    "response_contains_log4j",
+    "response_header_contains_log4j",
+    "response_body_contains_log4j",
+    "suspicious_request_got_2xx",
+    "suspicious_request_got_4xx",
+    "suspicious_request_got_5xx",
+    "sql_request_got_2xx",
+    "traversal_request_got_2xx",
+    "xss_request_got_2xx",
+    "log4j_request_got_2xx",
+    "rce_request_got_2xx",
+    "log_forging_request_got_2xx",
+    "auth_or_cookie_request_got_2xx",
+}
+
 
 ATTACK_FINDING_MAP = {
     "SQL Injection": "possible_sql_injection_exposure",
@@ -107,6 +135,46 @@ SEMANTIC_SIGNAL_WEIGHTS = {
 }
 
 
+PAYLOAD_TOKEN_COLUMNS = [
+    "path",
+    "url",
+    "query_string",
+    "request_body",
+    "body_raw",
+    "body_normalized",
+    "request_header_values",
+    "headers_filtered",
+    "user_agent",
+]
+
+PAYLOAD_FAMILY_PATTERNS = {
+    "payload_sql": re.compile(
+        r"(?:\bunion\b\s+\bselect\b|\bselect\b.+\bfrom\b|\bor\b\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?|\bor\b\s+1\s*=\s*1|--|/\*)",
+        re.IGNORECASE,
+    ),
+    "payload_traversal": re.compile(r"(?:\.\./|\.\.\\|%2e%2e|/etc/passwd|windows\\win\.ini)", re.IGNORECASE),
+    "payload_xss": re.compile(
+        r"(?:<script|<svg|java\s*script\s*:|javascript\s*:|onerror\s*=|onload\s*=|alert\s*\(|confirm\s*\()",
+        re.IGNORECASE,
+    ),
+    "payload_log4j": re.compile(r"(?:\$\{\s*jndi\s*:|jndi\s*:\s*(?:ldap|rmi|dns)\s*:)", re.IGNORECASE),
+    "payload_rce": re.compile(
+        r"(?:__globals__|__builtins__|__mro__|__subclasses__|\$\{ifs\}|/bin/sh|/etc/passwd|cmd=|powershell|exec\s*\(|system\s*\(|[`;&|]\s*(?:id|cat|uname|whoami)\b)",
+        re.IGNORECASE,
+    ),
+    "payload_log_forging": re.compile(r"(?:%0a|%0d|\\n|\\r|\n|\r|\u2028|\u2029)", re.IGNORECASE),
+}
+
+PAYLOAD_FAMILY_WEIGHTS = {
+    "payload_sql": 8,
+    "payload_traversal": 8,
+    "payload_xss": 8,
+    "payload_log4j": 8,
+    "payload_rce": 8,
+    "payload_log_forging": 8,
+}
+
+
 @dataclass
 class APIRetrievalModel:
     """Hashed-vector endpoint-aware retrieval model."""
@@ -118,6 +186,7 @@ class APIRetrievalModel:
     attack_vectors: np.ndarray = field(default_factory=lambda: np.zeros((0, 512), dtype=np.float32))
     attack_types: List[str] = field(default_factory=list)
     attack_endpoint_keys: List[str] = field(default_factory=list)
+    use_response_context: bool = False
 
     def fit(
         self,
@@ -128,6 +197,8 @@ class APIRetrievalModel:
         reference_sampling: str = "balanced",
     ) -> None:
         """Build benign and attack reference indexes from the training split."""
+        import pandas as pd
+
         labeled = train_df[pd.to_numeric(train_df["label_known"], errors="coerce").fillna(0).astype(int) == 1]
         benign_df = labeled[pd.to_numeric(labeled["label_binary"], errors="coerce").fillna(1).astype(int) == 0]
         attack_df = labeled[pd.to_numeric(labeled["label_binary"], errors="coerce").fillna(0).astype(int) == 1]
@@ -150,6 +221,8 @@ class APIRetrievalModel:
 
     def predict_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """Score rows and return predictions with thesis-friendly explanations."""
+        import pandas as pd
+
         vectors = self.vectorize(df)
         anomaly_scores, nearest_benign_similarity = self._score_against_benign(
             vectors=vectors,
@@ -221,6 +294,7 @@ class APIRetrievalModel:
                     "benign_endpoint_keys": self.benign_endpoint_keys,
                     "attack_types": self.attack_types,
                     "attack_endpoint_keys": self.attack_endpoint_keys,
+                    "use_response_context": self.use_response_context,
                 },
                 handle,
                 indent=2,
@@ -240,6 +314,7 @@ class APIRetrievalModel:
             attack_vectors=arrays["attack_vectors"],
             attack_types=list(meta["attack_types"]),
             attack_endpoint_keys=list(meta["attack_endpoint_keys"]),
+            use_response_context=bool(meta.get("use_response_context", False)),
         )
 
     def _score_against_benign(
@@ -270,24 +345,44 @@ class APIRetrievalModel:
         vectors: np.ndarray,
         predicted_binary: np.ndarray,
     ) -> Tuple[List[str], np.ndarray]:
-        """Predict attack type from nearest malicious reference."""
+        """Predict attack type by weighted voting over nearest malicious references."""
         if len(self.attack_vectors) == 0:
             return ["Unknown" if value else "Benign" for value in predicted_binary], np.zeros(len(vectors))
 
-        nearest_indices = np.zeros(len(vectors), dtype=np.int64)
-        nearest_scores = np.zeros(len(vectors), dtype=float)
+        voted_types: List[str] = ["Benign"] * len(vectors)
+        voted_scores = np.zeros(len(vectors), dtype=float)
         batch_size = 4096
         attack_vectors_t = self.attack_vectors.T
+        top_k = min(15, len(self.attack_vectors))
         for start in range(0, len(vectors), batch_size):
             end = min(start + batch_size, len(vectors))
             similarities = vectors[start:end] @ attack_vectors_t
-            nearest_indices[start:end] = similarities.argmax(axis=1)
-            nearest_scores[start:end] = similarities.max(axis=1)
+            if top_k == 1:
+                top_indices = similarities.argmax(axis=1)[:, None]
+            else:
+                top_indices = np.argpartition(similarities, -top_k, axis=1)[:, -top_k:]
 
-        attack_types = []
-        for is_anomaly, nearest_index in zip(predicted_binary, nearest_indices):
-            attack_types.append(self.attack_types[int(nearest_index)] if is_anomaly else "Benign")
-        return attack_types, nearest_scores
+            for local_idx, candidate_indices in enumerate(top_indices):
+                row_idx = start + local_idx
+                if not predicted_binary[row_idx]:
+                    continue
+
+                type_scores: Dict[str, float] = {}
+                for candidate_index in candidate_indices:
+                    attack_type = self.attack_types[int(candidate_index)]
+                    score = float(similarities[local_idx, candidate_index])
+                    type_scores[attack_type] = type_scores.get(attack_type, 0.0) + max(score, 0.0)
+
+                if not type_scores:
+                    voted_types[row_idx] = "Unknown"
+                    voted_scores[row_idx] = 0.0
+                    continue
+
+                best_type, best_score = max(type_scores.items(), key=lambda item: item[1])
+                voted_types[row_idx] = best_type
+                voted_scores[row_idx] = best_score
+
+        return voted_types, voted_scores
 
     def _row_tokens(self, row: pd.Series) -> List[str]:
         """Collect stable API tokens from one row."""
@@ -301,19 +396,140 @@ class APIRetrievalModel:
             else:
                 tokens.append(f"{column}:{value}")
 
-        status_code = int(row.get("status_code", -1) or -1)
-        if 200 <= status_code <= 599:
-            tokens.append(f"response_status_family:{status_code // 100}xx")
+        tokens.extend(self._payload_context_tokens(row))
+        tokens.extend(self._payload_value_tokens(row))
+        if self.use_response_context:
+            tokens.extend(self._response_context_tokens(row))
 
         for token in str(row.get("semantic_tokens", "") or "").split():
             weight = SEMANTIC_SIGNAL_WEIGHTS.get(token, 1)
             tokens.extend([token] * weight)
         for column in STATIC_SIGNAL_COLUMNS:
+            if not self.use_response_context and column in RESPONSE_CONTEXT_COLUMNS:
+                continue
             if int(row.get(column, 0) or 0) == 1:
                 weight = SECURITY_SIGNAL_WEIGHTS.get(column, 1)
                 tokens.extend([f"flag:{column}"] * weight)
 
         return tokens
+
+    @staticmethod
+    def _response_context_tokens(row: pd.Series) -> List[str]:
+        """Encode response/outcome context for misconfiguration-oriented models."""
+        tokens = []
+        status_code = int(row.get("status_code", -1) or -1)
+        if 200 <= status_code <= 599:
+            status_family = f"{status_code // 100}xx"
+            tokens.append(f"response_status_family:{status_family}")
+            if 200 <= status_code < 300:
+                tokens.append("outcome:accepted")
+            elif 400 <= status_code < 500:
+                tokens.append("outcome:blocked")
+            elif 500 <= status_code < 600:
+                tokens.append("outcome:errored")
+
+        for column in [
+            "suspicious_request_got_2xx",
+            "suspicious_request_got_4xx",
+            "suspicious_request_got_5xx",
+            "sql_request_got_2xx",
+            "traversal_request_got_2xx",
+            "xss_request_got_2xx",
+            "log4j_request_got_2xx",
+            "rce_request_got_2xx",
+            "log_forging_request_got_2xx",
+            "auth_or_cookie_request_got_2xx",
+        ]:
+            if int(row.get(column, 0) or 0) == 1:
+                tokens.extend([f"impact:{column}"] * 4)
+        return tokens
+
+    @classmethod
+    def _payload_value_tokens(cls, row: pd.Series) -> List[str]:
+        """Collect canonical payload value tokens, not only query/header names."""
+        payload = cls._canonical_payload_text(row)
+        if not payload:
+            return []
+
+        tokens: List[str] = []
+        for family, pattern in PAYLOAD_FAMILY_PATTERNS.items():
+            if pattern.search(payload):
+                tokens.extend([f"family:{family}"] * PAYLOAD_FAMILY_WEIGHTS.get(family, 1))
+
+        for key, value in cls._query_pairs(str(row.get("query_string", "") or "")):
+            if not value:
+                continue
+            value_text = cls._canonical_text(value).lower()
+            for token in cls._lexical_tokens(value_text):
+                tokens.append(f"query_value:{key}:{token}")
+                tokens.append(f"payload_token:{token}")
+
+        for column in ["path", "request_body", "body_raw", "body_normalized", "request_header_values", "user_agent"]:
+            value = cls._canonical_text(str(row.get(column, "") or "")).lower()
+            for token in cls._lexical_tokens(value):
+                tokens.append(f"{column}:{token}")
+                tokens.append(f"payload_token:{token}")
+
+        return tokens[:256]
+
+    @staticmethod
+    def _payload_context_tokens(row: pd.Series) -> List[str]:
+        """Encode coarse context to separate docs/search/static/auth from exploit surfaces."""
+        path = str(row.get("path", "") or "").lower()
+        path_template = str(row.get("path_template", "") or "").lower()
+        query = str(row.get("query_string", "") or "").lower()
+        tokens = []
+        if path.startswith("/docs/") or "/docs/" in path_template:
+            tokens.append("context:docs")
+        if "/search" in path or "q=" in query:
+            tokens.append("context:search")
+        if path.startswith("/static/"):
+            tokens.append("context:static")
+        if "/login" in path or "auth" in path or "profile" in path:
+            tokens.append("context:auth")
+        if path.startswith("/api/"):
+            tokens.append("context:api")
+        return tokens
+
+    @classmethod
+    def _canonical_payload_text(cls, row: pd.Series) -> str:
+        values = []
+        for column in PAYLOAD_TOKEN_COLUMNS:
+            value = str(row.get(column, "") or "")
+            if value:
+                values.append(value)
+        return cls._canonical_text(" ".join(values)).lower()
+
+    @classmethod
+    def _canonical_text(cls, value: str) -> str:
+        decoded = str(value or "")
+        for _ in range(3):
+            next_value = unquote_plus(decoded)
+            if next_value == decoded:
+                break
+            decoded = next_value
+        decoded = cls._deobfuscate_log4j(decoded)
+        decoded = re.sub(r"/\*.*?\*/", " ", decoded)
+        return decoded
+
+    @staticmethod
+    def _deobfuscate_log4j(value: str) -> str:
+        value = re.sub(r"\$\{\s*::-\s*([a-zA-Z])\s*\}", r"\1", value)
+        value = re.sub(r"\$\{\s*lower\s*:\s*([a-zA-Z])\s*\}", r"\1", value, flags=re.IGNORECASE)
+        value = re.sub(r"\$\{\s*upper\s*:\s*([a-zA-Z])\s*\}", r"\1", value, flags=re.IGNORECASE)
+        return value
+
+    @staticmethod
+    def _query_pairs(query: str) -> List[Tuple[str, str]]:
+        try:
+            return [(str(key).lower(), str(value)) for key, value in parse_qsl(query, keep_blank_values=True)]
+        except ValueError:
+            return []
+
+    @staticmethod
+    def _lexical_tokens(value: str) -> List[str]:
+        raw_tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{1,40}|\d+|[./\\${}:;|&`<>()='\"-]+", value)
+        return [token[:48] for token in raw_tokens if token.strip()][:32]
 
     @staticmethod
     def _hash_token(token: str) -> int:
@@ -335,6 +551,8 @@ class APIRetrievalModel:
         random_seed: int,
     ) -> pd.DataFrame:
         """Sample references with coverage across attack types or endpoints."""
+        import pandas as pd
+
         if max_rows <= 0 or len(df) <= max_rows or group_column not in df.columns:
             return df.copy()
 

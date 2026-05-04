@@ -113,7 +113,12 @@ class APITrafficPipeline:
         self.splitter.split_shards(static_features_dir, splits_dir)
 
     def _select_static_output_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Keep only static structural columns plus static binary features and labels."""
+        """Keep request-time static columns plus labels.
+
+        `request_only` intentionally excludes response/status/impact columns so
+        downstream models learn attack shape from client-controlled input, not
+        whether the application accepted, rejected, or errored.
+        """
         static_metadata_columns = [
             "event_id",
             "dataset_id",
@@ -123,12 +128,21 @@ class APITrafficPipeline:
             "event_timestamp",
             "method",
             "host",
+            "path",
+            "url",
             "path_template",
+            "query_string",
             "query_key_set",
+            "request_text",
+            "request_body",
+            "body_raw",
+            "body_normalized",
+            "cookie",
+            "user_agent",
+            "headers_filtered",
             "request_header_names",
+            "request_header_values",
             "content_type",
-            "status",
-            "status_code",
             "endpoint_key",
             "semantic_tokens",
             "parse_status",
@@ -137,6 +151,9 @@ class APITrafficPipeline:
             "label_binary",
             "attack_type",
         ]
+        if self.config.static_view == "request_response":
+            static_metadata_columns.extend(["status", "status_code", "response_text"])
+
         static_feature_columns = self.feature_builder.get_static_feature_list()
         selected_columns = [
             column for column in [*static_metadata_columns, *static_feature_columns] if column in df.columns
@@ -159,7 +176,9 @@ class APITrafficPipeline:
             "static_view": self.config.static_view,
             "label_column": "label_binary",
             "feature_blocks": self.feature_builder.get_feature_blocks(),
-            "default_training_blocks": ["static"],
+            "default_training_blocks": ["request_static"]
+            if self.config.static_view == "request_only"
+            else ["static"],
             "text_columns": ["request_text", "response_text", "combined_text", "model_text"],
             "metadata_columns": [
                 "event_id",
@@ -175,6 +194,8 @@ class APITrafficPipeline:
             "notes": {
                 "supervised_splits_use_label_known_rows_only": True,
                 "splits_are_static_only": True,
+                "request_only_static_excludes_response_status_and_impact": self.config.static_view == "request_only",
+                "request_response_static_includes_response_status_and_impact_for_misconfiguration_training": self.config.static_view == "request_response",
                 "full_dynamic_feature_artifacts_remain_in_features": True,
                 "unlabeled_challenge_validation_written_to_splits_unlabeled_validation": True,
                 "endpoint_context_is_first_class": True,

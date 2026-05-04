@@ -24,7 +24,7 @@ class APITrafficConfig(BaseConfig):
     task_type: str = "binary"  # binary or attack_type
     feature_mode: str = "request_only"  # request_only, response_only, combined
     text_mode: str = "hybrid"  # lexical, tokenized, hybrid
-    static_view: str = "request_response"  # request_only, request_response
+    static_view: str = "request_only"  # request_only, request_response
     anomaly_reference_label: int = 0  # benign-only fallback training
 
     # Validation archives do not contain labels in this challenge.

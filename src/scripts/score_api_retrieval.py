@@ -20,12 +20,18 @@ def main() -> None:
     parser.add_argument("--processed-dir", type=Path, required=True, help="Processed API traffic directory")
     parser.add_argument("--experiment-dir", type=Path, required=True, help="Experiment artifact directory")
     parser.add_argument("--split", type=str, required=True, help="Split name under processed-dir/splits")
+    parser.add_argument(
+        "--no-hints",
+        action="store_true",
+        help="Zero semantic tokens and static attack flags before scoring",
+    )
     args = parser.parse_args()
 
-    metrics = APIEvaluationRunner(
+    runner = APIEvaluationRunner(
         processed_data_dir=args.processed_dir,
         experiment_dir=args.experiment_dir,
-    ).evaluate_split(args.split)
+    )
+    metrics = runner.evaluate_split_without_hints(args.split) if args.no_hints else runner.evaluate_split(args.split)
     if metrics.get("labeled", True):
         print(f"F1: {metrics['f1']:.4f}")
 

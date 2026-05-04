@@ -73,9 +73,9 @@ def main():
     parser.add_argument(
         "--static-view",
         type=str,
-        default="request_response",
+        default="request_only",
         choices=["request_only", "request_response"],
-        help="Choose static training split view: request_only or request_response",
+        help="request_only learns attack shape; request_response includes response/impact for misconfiguration training",
     )
 
     args = parser.parse_args()

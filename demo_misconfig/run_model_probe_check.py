@@ -238,6 +238,47 @@ def write_report(rows: list[dict[str, Any]], output_path: Path) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+    write_summary_json(rows, output_path.with_suffix(".summary.json"))
+
+
+def write_summary_json(rows: list[dict[str, Any]], output_path: Path) -> None:
+    """Persist probe-goal metrics for model promotion checks."""
+    by_goal = {}
+    for goal, group in _group_rows(rows, "probe_goal").items():
+        by_goal[goal] = _metric_summary(group)
+
+    by_attack_type = {}
+    for attack_type, group in _group_rows(rows, "attack_type_expected").items():
+        by_attack_type[attack_type] = _metric_summary(group)
+
+    payload = {
+        "overall": _metric_summary(rows),
+        "failure_counts": dict(Counter(row["failure_type"] or "passed" for row in rows)),
+        "by_probe_goal": by_goal,
+        "by_attack_type": by_attack_type,
+    }
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
+def _group_rows(rows: list[dict[str, Any]], column: str) -> dict[str, list[dict[str, Any]]]:
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[str(row[column])].append(row)
+    return dict(grouped)
+
+
+def _metric_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total = max(len(rows), 1)
+    return {
+        "rows": len(rows),
+        "strict_pass": int(sum(row["strict_pass"] for row in rows)),
+        "strict_rate": float(sum(row["strict_pass"] for row in rows) / total),
+        "binary_pass": int(sum(row["binary_pass"] for row in rows)),
+        "binary_rate": float(sum(row["binary_pass"] for row in rows) / total),
+        "type_pass": int(sum(row["type_pass"] for row in rows)),
+        "type_rate": float(sum(row["type_pass"] for row in rows) / total),
+    }
 
 
 def print_summary(rows: list[dict[str, Any]]) -> None:

@@ -35,6 +35,11 @@ class APIEvaluationRunner:
         df = self.load_split(split_name)
         return self.evaluate_dataframe(df, split_name)
 
+    def evaluate_split_without_hints(self, split_name: str) -> dict:
+        """Evaluate with semantic tokens and static attack flags removed."""
+        df = self.load_split(split_name)
+        return self.evaluate_dataframe(self.without_security_hints(df), f"{split_name}_no_hints")
+
     def evaluate_dataframe(self, df: pd.DataFrame, split_name: str) -> dict:
         """Evaluate one dataframe and save metrics/predictions."""
         predictions = self.model.predict_dataframe(df)
@@ -55,6 +60,7 @@ class APIEvaluationRunner:
         metrics = binary_classification_metrics(y_true=y_true, y_score=y_score, threshold=self.model.threshold)
         metrics["split"] = split_name
         metrics["attack_type_report"] = self.attack_type_report(predictions)
+        metrics["attack_type_metrics"] = self.attack_type_metrics(predictions)
         metrics["warnings"] = self.attack_type_warnings(metrics["attack_type_report"])
         metrics["finding_counts"] = predictions["security_finding"].value_counts().to_dict()
         self.save_json(f"reports/{split_name}_metrics.json", metrics)
@@ -86,6 +92,68 @@ class APIEvaluationRunner:
                 else "Unknown",
             }
         return report
+
+    @staticmethod
+    def attack_type_metrics(predictions: pd.DataFrame) -> dict:
+        """Measure attack-type routing separately from binary anomaly detection."""
+        if "attack_type_true" not in predictions.columns:
+            return {}
+
+        labeled_attacks = predictions[predictions["attack_type_true"].fillna("Benign").astype(str) != "Benign"]
+        if labeled_attacks.empty:
+            return {
+                "attack_rows": 0,
+                "attack_type_accuracy": None,
+                "strict_attack_accuracy": None,
+            }
+
+        type_correct = labeled_attacks["predicted_attack_type"].astype(str) == labeled_attacks["attack_type_true"].astype(str)
+        strict_correct = type_correct & (labeled_attacks["y_pred"] == 1)
+        by_type = {}
+        for attack_type, group in labeled_attacks.groupby("attack_type_true"):
+            group_type_correct = group["predicted_attack_type"].astype(str) == str(attack_type)
+            by_type[str(attack_type)] = {
+                "rows": int(len(group)),
+                "type_correct": int(group_type_correct.sum()),
+                "type_accuracy": float(group_type_correct.mean()) if len(group) else 0.0,
+                "strict_correct": int((group_type_correct & (group["y_pred"] == 1)).sum()),
+            }
+
+        return {
+            "attack_rows": int(len(labeled_attacks)),
+            "attack_type_accuracy": float(type_correct.mean()),
+            "strict_attack_accuracy": float(strict_correct.mean()),
+            "by_attack_type": by_type,
+        }
+
+    @staticmethod
+    def without_security_hints(df: pd.DataFrame) -> pd.DataFrame:
+        """Remove shortcut-prone semantic hints for payload-generalization audits."""
+        scrubbed = df.copy()
+        if "semantic_tokens" in scrubbed.columns:
+            scrubbed["semantic_tokens"] = ""
+        hint_columns = [
+            "request_contains_sql_keywords",
+            "request_contains_traversal",
+            "request_contains_xss",
+            "request_contains_log4j",
+            "request_header_contains_log4j",
+            "request_contains_rce",
+            "request_contains_log_forging",
+            "suspicious_request_got_2xx",
+            "suspicious_request_got_4xx",
+            "suspicious_request_got_5xx",
+            "sql_request_got_2xx",
+            "traversal_request_got_2xx",
+            "xss_request_got_2xx",
+            "log4j_request_got_2xx",
+            "rce_request_got_2xx",
+            "log_forging_request_got_2xx",
+        ]
+        for column in hint_columns:
+            if column in scrubbed.columns:
+                scrubbed[column] = 0
+        return scrubbed
 
     @staticmethod
     def attack_type_warnings(attack_type_report: Dict[str, Dict[str, int]]) -> list:

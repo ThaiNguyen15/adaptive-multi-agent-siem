@@ -26,6 +26,7 @@ class APITrainingRunner:
         max_benign_refs: int = 20000,
         max_attack_refs: int = 20000,
         reference_sampling: str = "balanced",
+        use_response_context: bool = False,
     ):
         self.processed_data_dir = Path(processed_data_dir)
         self.experiment_dir = Path(experiment_dir)
@@ -33,6 +34,7 @@ class APITrainingRunner:
         self.max_benign_refs = max_benign_refs
         self.max_attack_refs = max_attack_refs
         self.reference_sampling = reference_sampling
+        self.use_response_context = use_response_context
         (self.experiment_dir / "reports").mkdir(parents=True, exist_ok=True)
         (self.experiment_dir / "predictions").mkdir(parents=True, exist_ok=True)
 
@@ -41,7 +43,10 @@ class APITrainingRunner:
         train_df = self.load_split("train")
         val_df = self.load_split("val")
 
-        model = APIRetrievalModel(dimension=self.dimension)
+        model = APIRetrievalModel(
+            dimension=self.dimension,
+            use_response_context=self.use_response_context,
+        )
         model.fit(
             train_df=train_df,
             max_benign_refs=self.max_benign_refs,
@@ -97,9 +102,11 @@ class APITrainingRunner:
             "max_benign_refs": self.max_benign_refs,
             "max_attack_refs": self.max_attack_refs,
             "reference_sampling": self.reference_sampling,
+            "use_response_context": self.use_response_context,
             "selected_threshold": model.threshold,
             "model_type": "endpoint_aware_hashed_semantic_retrieval",
             "training_policy": "fit_on_train_tune_on_val_do_not_touch_test",
+            "learning_target": "misconfiguration_outcome" if self.use_response_context else "attack_attempt_request_shape",
         }
         self.save_json("config.json", config)
         return {

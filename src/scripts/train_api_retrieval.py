@@ -27,6 +27,11 @@ def main() -> None:
         default="balanced",
         help="How to sample benign/attack reference banks",
     )
+    parser.add_argument(
+        "--use-response-context",
+        action="store_true",
+        help="Use response status/impact tokens for misconfiguration-oriented training",
+    )
     args = parser.parse_args()
 
     result = APITrainingRunner(
@@ -36,6 +41,7 @@ def main() -> None:
         max_benign_refs=args.max_benign_refs,
         max_attack_refs=args.max_attack_refs,
         reference_sampling=args.reference_sampling,
+        use_response_context=args.use_response_context,
     ).run()
 
     print("API RETRIEVAL TRAIN/EVAL COMPLETED")

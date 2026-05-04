@@ -8,7 +8,7 @@ be audited for leakage and modeled in a request-centric way by default.
 from __future__ import annotations
 
 import re
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, unquote_plus
 
 import pandas as pd
 
@@ -25,11 +25,13 @@ SQL_PATTERN = re.compile(
     r"(?<!\*)/\*|--"
     r")"
 )
-TRAVERSAL_PATTERN = re.compile(r"(?:\.\./|\.\.\\|%2e%2e|%252e%252e)", re.IGNORECASE)
-XSS_PATTERN = re.compile(r"(?i)(?:<script|javascript:|onerror=|onload=|alert\()")
-LOG4J_PATTERN = re.compile(r"(?i)(?:\$\{jndi:|ldap:|rmi:|dns:)")
-RCE_PATTERN = re.compile(r"(?i)(?:__globals__|__builtins__|exec\(|system\(|cmd=|powershell|/bin/sh)")
-LOG_FORGING_PATTERN = re.compile(r"(?i)(?:%0a|%0d|\\n|\\r|\n|\r)")
+TRAVERSAL_PATTERN = re.compile(r"(?:\.\./|\.\.\\|%2e%2e|%252e%252e|/etc/passwd|windows\\win\.ini)", re.IGNORECASE)
+XSS_PATTERN = re.compile(r"(?i)(?:<script|<svg|java\s*script\s*:|javascript:|onerror\s*=|onload\s*=|alert\s*\(|confirm\s*\()")
+LOG4J_PATTERN = re.compile(r"(?i)(?:\$\{\s*jndi\s*:|jndi\s*:\s*(?:ldap|rmi|dns)\s*:)")
+RCE_PATTERN = re.compile(
+    r"(?i)(?:__globals__|__builtins__|__mro__|__subclasses__|\$\{ifs\}|exec\s*\(|system\s*\(|cmd=|powershell|/bin/sh|/etc/passwd|[`;&|]\s*(?:id|cat|uname|whoami)\b)"
+)
+LOG_FORGING_PATTERN = re.compile(r"(?i)(?:%0a|%0d|\\n|\\r|\n|\r|\u2028|\u2029)")
 
 
 class APITrafficFeatureBuilder(BaseFeatureBuilder):
@@ -82,8 +84,14 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
         "request_rce_token_count",
         "request_newline_token_count",
         "request_percent_encoded_count",
+        "request_double_encoded_count",
         "request_special_char_count",
         "request_digit_count",
+        "request_context_is_docs",
+        "request_context_is_search",
+        "request_context_is_static",
+        "request_context_is_auth",
+        "request_context_is_api",
         "request_signal_score",
     ]
 
@@ -135,14 +143,26 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
         "request_method_is_options",
         "request_method_is_uncommon",
         "request_host_is_ip",
+        "request_url_length",
+        "request_path_length",
+        "request_path_template_length",
+        "request_path_depth",
         "request_path_has_template_num",
         "request_path_has_template_hex",
         "request_path_has_template_token",
+        "request_query_length",
+        "request_query_param_count",
+        "request_query_key_count",
+        "request_body_length",
+        "request_body_normalized_length",
+        "request_cookie_length",
+        "request_user_agent_length",
         "request_has_cookie",
         "request_has_authorization",
         "request_has_forwarded_for",
         "request_has_content_type",
         "request_has_json_content_type",
+        "request_header_count_filtered",
         "parse_status_ok",
         "path_percent_decoded",
         "body_percent_decoded",
@@ -154,6 +174,15 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
         "request_header_contains_log4j",
         "request_contains_rce",
         "request_contains_log_forging",
+        "request_percent_encoded_count",
+        "request_double_encoded_count",
+        "request_special_char_count",
+        "request_digit_count",
+        "request_context_is_docs",
+        "request_context_is_search",
+        "request_context_is_static",
+        "request_context_is_auth",
+        "request_context_is_api",
     ]
 
     RESPONSE_STATIC_FEATURE_COLUMNS = [
@@ -239,9 +268,85 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
                 "request_rce_token_count",
                 "request_newline_token_count",
                 "request_percent_encoded_count",
+                "request_double_encoded_count",
                 "request_special_char_count",
                 "request_digit_count",
+                "request_context_is_docs",
+                "request_context_is_search",
+                "request_context_is_static",
+                "request_context_is_auth",
+                "request_context_is_api",
                 "request_signal_score",
+            ],
+            "sql_injection_focus": [
+                "request_contains_sql_keywords",
+                "request_sql_keyword_count",
+                "request_percent_encoded_count",
+                "request_double_encoded_count",
+                "request_special_char_count",
+                "request_query_length",
+                "request_query_param_count",
+                "request_context_is_docs",
+                "request_context_is_search",
+                "request_context_is_api",
+            ],
+            "directory_traversal_focus": [
+                "request_contains_traversal",
+                "request_traversal_token_count",
+                "path_percent_decoded",
+                "request_percent_encoded_count",
+                "request_double_encoded_count",
+                "request_path_depth",
+                "request_context_is_static",
+                "request_context_is_docs",
+                "request_context_is_api",
+            ],
+            "xss_focus": [
+                "request_contains_xss",
+                "request_xss_token_count",
+                "request_special_char_count",
+                "request_percent_encoded_count",
+                "request_double_encoded_count",
+                "request_context_is_docs",
+                "request_context_is_search",
+                "request_context_is_api",
+            ],
+            "log4j_focus": [
+                "request_contains_log4j",
+                "request_header_contains_log4j",
+                "request_log4j_token_count",
+                "request_percent_encoded_count",
+                "request_double_encoded_count",
+                "request_user_agent_length",
+                "request_context_is_docs",
+                "request_context_is_api",
+            ],
+            "rce_focus": [
+                "request_contains_rce",
+                "request_rce_token_count",
+                "request_special_char_count",
+                "request_percent_encoded_count",
+                "request_double_encoded_count",
+                "request_has_json_content_type",
+                "request_context_is_docs",
+                "request_context_is_api",
+            ],
+            "log_forging_focus": [
+                "request_contains_log_forging",
+                "request_newline_token_count",
+                "request_percent_encoded_count",
+                "request_double_encoded_count",
+                "request_user_agent_length",
+                "request_context_is_docs",
+                "request_context_is_api",
+            ],
+            "cookie_injection_focus": [
+                "request_has_cookie",
+                "request_has_authorization",
+                "request_cookie_length",
+                "request_context_is_auth",
+                "request_context_is_static",
+                "request_context_is_api",
             ],
             "response": self.RESPONSE_LEXICAL_FEATURES,
             "impact": [
@@ -305,6 +410,7 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
                 "request_header_values",
             ],
         )
+        request_scan_text = self._canonicalize_series(request_scan_text)
         response_scan_text = self._join_scan_columns(
             df,
             [
@@ -315,6 +421,7 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
                 "content_type",
             ],
         )
+        response_scan_text = self._canonicalize_series(response_scan_text)
 
         if self.config.text_mode in {"lexical", "hybrid"}:
             if self.config.feature_mode in {"request_only", "combined"}:
@@ -415,7 +522,7 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
             df["request_header_values"].fillna("").str.contains(LOG4J_PATTERN, regex=True).astype(int)
         )
         df["request_contains_rce"] = request_scan_text.str.contains(RCE_PATTERN, regex=True).astype(int)
-        df["request_contains_log_forging"] = request_text.str.contains(
+        df["request_contains_log_forging"] = request_scan_text.str.contains(
             LOG_FORGING_PATTERN, regex=True
         ).astype(int)
         df["request_sql_keyword_count"] = request_scan_text.str.count(SQL_PATTERN)
@@ -423,10 +530,22 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
         df["request_xss_token_count"] = request_scan_text.str.count(XSS_PATTERN)
         df["request_log4j_token_count"] = request_scan_text.str.count(LOG4J_PATTERN)
         df["request_rce_token_count"] = request_scan_text.str.count(RCE_PATTERN)
-        df["request_newline_token_count"] = request_text.str.count(LOG_FORGING_PATTERN)
+        df["request_newline_token_count"] = request_scan_text.str.count(LOG_FORGING_PATTERN)
         df["request_percent_encoded_count"] = request_text.str.count(r"%[0-9a-fA-F]{2}")
+        df["request_double_encoded_count"] = request_text.str.count(r"%25[0-9a-fA-F]{2}")
         df["request_special_char_count"] = request_text.str.count(r"['\";<>{}\[\]\(\)$]")
         df["request_digit_count"] = request_text.str.count(r"\d")
+        path_lower = df["path"].fillna("").str.lower()
+        query_lower = df["query_string"].fillna("").str.lower()
+        df["request_context_is_docs"] = path_lower.str.startswith("/docs/").astype(int)
+        df["request_context_is_search"] = (path_lower.str.contains("/search", regex=False) | query_lower.str.contains("q=", regex=False)).astype(int)
+        df["request_context_is_static"] = path_lower.str.startswith("/static/").astype(int)
+        df["request_context_is_auth"] = (
+            path_lower.str.contains("/login", regex=False)
+            | path_lower.str.contains("auth", regex=False)
+            | path_lower.str.contains("profile", regex=False)
+        ).astype(int)
+        df["request_context_is_api"] = path_lower.str.startswith("/api/").astype(int)
 
         signal_columns = [
             "request_contains_sql_keywords",
@@ -565,6 +684,31 @@ class APITrafficFeatureBuilder(BaseFeatureBuilder):
         for part in parts[1:]:
             result = result + " " + part
         return result
+
+    @classmethod
+    def _canonicalize_series(cls, series: pd.Series) -> pd.Series:
+        """Decode and deobfuscate text before pattern feature extraction."""
+        return series.fillna("").astype(str).apply(cls._canonicalize_text)
+
+    @classmethod
+    def _canonicalize_text(cls, value: str) -> str:
+        decoded = str(value or "")
+        for _ in range(3):
+            next_value = unquote_plus(decoded)
+            if next_value == decoded:
+                break
+            decoded = next_value
+        decoded = cls._deobfuscate_log4j(decoded)
+        decoded = re.sub(r"/\*.*?\*/", " ", decoded)
+        compact = re.sub(r"\s+", "", decoded)
+        return f"{decoded} {compact}"
+
+    @staticmethod
+    def _deobfuscate_log4j(value: str) -> str:
+        value = re.sub(r"\$\{\s*::-\s*([a-zA-Z])\s*\}", r"\1", value)
+        value = re.sub(r"\$\{\s*lower\s*:\s*([a-zA-Z])\s*\}", r"\1", value, flags=re.IGNORECASE)
+        value = re.sub(r"\$\{\s*upper\s*:\s*([a-zA-Z])\s*\}", r"\1", value, flags=re.IGNORECASE)
+        return value
 
     def _select_model_text(self, df: pd.DataFrame) -> pd.Series:
         """Select the text stream used by downstream vectorizers/models."""
