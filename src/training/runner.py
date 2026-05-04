@@ -58,6 +58,20 @@ class TrainingRunner:
             max_epochs=self.config.max_epochs,
             l2_reg=self.config.l2_reg,
             standardize=self.config.standardize,
+            X_val=X_val,
+            y_val=y_val,
+            class_weight=self.config.class_weight,
+            positive_class_weight=(
+                self.config.positive_class_weight
+                if self.config.positive_class_weight and self.config.positive_class_weight > 0
+                else None
+            ),
+            batch_size=self.config.batch_size,
+            optimizer=self.config.optimizer,
+            early_stopping=self.config.early_stopping,
+            patience=self.config.early_stopping_patience,
+            min_delta=self.config.early_stopping_min_delta,
+            random_seed=self.config.random_seed,
         )
 
         val_scores = model.predict_proba(X_val)
@@ -97,6 +111,9 @@ class TrainingRunner:
             "threshold_search": threshold_search,
             "train_metrics": train_metrics,
             "val_metrics": val_metrics,
+            "training_history": model.training_history,
+            "feature_importance": model.feature_importance(),
+            "model_config": model.model_config,
         }
 
     def _save_threshold(self, threshold: float) -> None:
@@ -146,6 +163,21 @@ class TrainingRunner:
             json.dump(best_result["val_metrics"], handle, indent=2)
         with open(self.config.experiment_dir / "feature_columns.json", "w", encoding="utf-8") as handle:
             json.dump(best_result["feature_columns"], handle, indent=2)
+        with open(self.config.experiment_dir / "reports" / "model_diagnostics.json", "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "best_experiment_name": best_result["name"],
+                    "feature_count": best_result["feature_count"],
+                    "selected_threshold": best_result["selected_threshold"],
+                    "model_config": best_result["model_config"],
+                    "top_feature_importance": best_result["feature_importance"],
+                    "final_training_history": best_result["training_history"][-10:]
+                    if best_result["training_history"]
+                    else [],
+                },
+                handle,
+                indent=2,
+            )
         with open(self.config.experiment_dir / "reports" / "ablation_summary.json", "w", encoding="utf-8") as handle:
             json.dump(
                 [

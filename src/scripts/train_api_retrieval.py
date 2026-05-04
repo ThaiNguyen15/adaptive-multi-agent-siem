@@ -18,9 +18,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train API endpoint-aware retrieval model")
     parser.add_argument("--processed-dir", type=Path, required=True, help="Processed API traffic directory")
     parser.add_argument("--experiment-dir", type=Path, required=True, help="Output experiment directory")
-    parser.add_argument("--dimension", type=int, default=512, help="Hashed vector dimension")
-    parser.add_argument("--max-benign-refs", type=int, default=20000, help="Maximum benign reference rows")
-    parser.add_argument("--max-attack-refs", type=int, default=20000, help="Maximum attack reference rows")
+    parser.add_argument("--dimension", type=int, default=2048, help="Hashed vector dimension")
+    parser.add_argument("--max-benign-refs", type=int, default=80000, help="Maximum benign reference rows")
+    parser.add_argument("--max-attack-refs", type=int, default=80000, help="Maximum attack reference rows")
+    parser.add_argument(
+        "--reference-sampling",
+        choices=["balanced", "random"],
+        default="balanced",
+        help="How to sample benign/attack reference banks",
+    )
     args = parser.parse_args()
 
     result = APITrainingRunner(
@@ -29,6 +35,7 @@ def main() -> None:
         dimension=args.dimension,
         max_benign_refs=args.max_benign_refs,
         max_attack_refs=args.max_attack_refs,
+        reference_sampling=args.reference_sampling,
     ).run()
 
     print("API RETRIEVAL TRAIN/EVAL COMPLETED")

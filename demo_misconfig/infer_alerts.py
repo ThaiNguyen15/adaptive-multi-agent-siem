@@ -6,11 +6,11 @@ import re
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+from urllib.parse import unquote_plus
 
-import pandas as pd
-
-from src.domains.api_traffic.training.model import APIRetrievalModel
+if TYPE_CHECKING:
+    from src.domains.api_traffic.training.model import APIRetrievalModel
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -31,14 +31,51 @@ SQL_RE = re.compile(
     re.IGNORECASE,
 )
 TRAVERSAL_RE = re.compile(r"(\.\./|%2e%2e%2f|%2e%2e/)", re.IGNORECASE)
-XSS_RE = re.compile(r"(<script|javascript:|onerror=|onload=)", re.IGNORECASE)
-LOG4J_RE = re.compile(r"\$\{\s*jndi\s*:", re.IGNORECASE)
-RCE_RE = re.compile(r"(__import__|/bin/sh|cmd=|exec\(|system\()", re.IGNORECASE)
-LOG_FORGING_RE = re.compile(r"(%0a|%0d|\\n|\\r)", re.IGNORECASE)
+XSS_RE = re.compile(
+    r"(<script|<svg|java\s*script\s*:|javascript\s*:|onerror\s*=|onload\s*=|alert\s*\(|confirm\s*\()",
+    re.IGNORECASE,
+)
+LOG4J_RE = re.compile(r"\$\{\s*jndi\s*:|jndi\s*:\s*(ldap|rmi|dns)\s*:", re.IGNORECASE)
+RCE_RE = re.compile(
+    r"(__import__|__mro__|__subclasses__|\$\{ifs\}|/bin/sh|/etc/passwd|cmd=|exec\s*\(|system\s*\(|[`;&|]\s*(id|cat|uname|whoami)\b)",
+    re.IGNORECASE,
+)
+LOG_FORGING_RE = re.compile(r"(%0a|%0d|\\n|\\r|\n|\r|\u2028|\u2029)", re.IGNORECASE)
+
+
+def _decode_repeated(value: str, max_rounds: int = 3) -> str:
+    """Decode URL-encoded text a few times while preserving the original shape."""
+    decoded = str(value or "")
+    for _ in range(max_rounds):
+        next_value = unquote_plus(decoded)
+        if next_value == decoded:
+            break
+        decoded = next_value
+    return decoded
+
+
+def _deobfuscate_log4j(text: str) -> str:
+    """Normalize common Log4J lookup obfuscation such as ${::-j}${::-n}."""
+    normalized = re.sub(r"\$\{\s*::-\s*([a-zA-Z])\s*\}", r"\1", text)
+    normalized = re.sub(r"\$\{\s*lower\s*:\s*([a-zA-Z])\s*\}", r"\1", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\$\{\s*upper\s*:\s*([a-zA-Z])\s*\}", r"\1", normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def _canonical_request_text(event: dict[str, Any]) -> str:
+    """Return original plus decoded/deobfuscated request text for detection."""
+    raw = _combined_request_text(event)
+    decoded = _decode_repeated(raw)
+    deobfuscated = _deobfuscate_log4j(decoded)
+    compact = re.sub(r"/\*.*?\*/", "", deobfuscated)
+    compact = re.sub(r"\s+", "", compact)
+    return " ".join([raw, decoded, deobfuscated, compact])
 
 
 @lru_cache(maxsize=1)
-def load_model(model_dir: str = str(DEFAULT_MODEL_DIR)) -> APIRetrievalModel:
+def load_model(model_dir: str = str(DEFAULT_MODEL_DIR)) -> "APIRetrievalModel":
+    from src.domains.api_traffic.training.model import APIRetrievalModel
+
     return APIRetrievalModel.load(Path(model_dir))
 
 
@@ -50,8 +87,10 @@ def _combined_request_text(event: dict[str, Any]) -> str:
 
 
 def _regex_signal(event: dict[str, Any]) -> tuple[str | None, list[str]]:
-    text = _combined_request_text(event)
+    text = _canonical_request_text(event)
     evidence: list[str] = []
+    path = str(event.get("path", ""))
+    query = _decode_repeated(str(event.get("query", "")))
 
     if LOG4J_RE.search(text):
         evidence.append("request_contains_log4j")
@@ -59,7 +98,7 @@ def _regex_signal(event: dict[str, Any]) -> tuple[str | None, list[str]]:
             evidence.append("request_header_contains_log4j")
         return "LOG4J", evidence
 
-    if TRAVERSAL_RE.search(text):
+    if TRAVERSAL_RE.search(text) or re.search(r"\.\.[/\\]", text):
         evidence.append("request_contains_traversal")
         return "Directory Traversal", evidence
 
@@ -76,10 +115,19 @@ def _regex_signal(event: dict[str, Any]) -> tuple[str | None, list[str]]:
         return "Log Forging", evidence
 
     if SQL_RE.search(text):
+        if path.startswith("/docs/") and not re.search(r"('|--|/\*|\bor\s+\d+\s*=\s*\d+\b)", query, re.IGNORECASE):
+            return None, []
         evidence.append("request_contains_sql_keywords")
         return "SQL Injection", evidence
 
-    if event.get("path") == "/cookielogin" and event.get("request_has_cookie"):
+    query = query.lower()
+    has_cookie = bool(event.get("request_has_cookie"))
+    if has_cookie and (
+        path == "/cookielogin"
+        or path.startswith("/login/")
+        or "role=admin" in query
+        or "next=/admin" in query
+    ):
         evidence.append("request_has_cookie")
         return "Cookie Injection", evidence
 
@@ -109,6 +157,8 @@ def _semantic_tokens(attack_type: str | None) -> str:
 
 
 def _event_to_model_frame(event: dict[str, Any], attack_type_hint: str | None) -> pd.DataFrame:
+    import pandas as pd
+
     path = str(event.get("path", ""))
     method = str(event.get("method", "GET")).upper()
     status_code = int(event.get("status_code", 0) or 0)

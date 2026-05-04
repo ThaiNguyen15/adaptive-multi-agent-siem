@@ -23,6 +23,29 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=0.1, help="Gradient descent learning rate")
     parser.add_argument("--max-epochs", type=int, default=300, help="Training epochs")
     parser.add_argument("--l2-reg", type=float, default=1e-4, help="L2 regularization strength")
+    parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam", help="Optimizer")
+    parser.add_argument("--batch-size", type=int, default=2048, help="Mini-batch size; <=0 uses full batch")
+    parser.add_argument(
+        "--class-weight",
+        choices=["balanced", "none"],
+        default="balanced",
+        help="Class weighting policy for imbalanced data",
+    )
+    parser.add_argument(
+        "--positive-class-weight",
+        type=float,
+        default=0.0,
+        help="Explicit positive-class weight; overrides --class-weight when >0",
+    )
+    parser.add_argument(
+        "--disable-early-stopping",
+        action="store_true",
+        help="Run all epochs instead of stopping on validation loss plateau",
+    )
+    parser.add_argument("--early-stopping-patience", type=int, default=25, help="Validation-loss patience")
+    parser.add_argument("--early-stopping-min-delta", type=float, default=1e-5, help="Minimum validation-loss improvement")
+    parser.add_argument("--max-rows-per-split", type=int, default=0, help="Optional smoke-test row cap per split")
+    parser.add_argument("--ablation-mode", choices=["off", "per_block"], default="off", help="Feature ablation mode")
     args = parser.parse_args()
 
     config = ExperimentConfig(
@@ -33,6 +56,15 @@ def main() -> None:
         learning_rate=args.learning_rate,
         max_epochs=args.max_epochs,
         l2_reg=args.l2_reg,
+        optimizer=args.optimizer,
+        batch_size=args.batch_size,
+        class_weight=args.class_weight,
+        positive_class_weight=args.positive_class_weight,
+        early_stopping=not args.disable_early_stopping,
+        early_stopping_patience=args.early_stopping_patience,
+        early_stopping_min_delta=args.early_stopping_min_delta,
+        max_rows_per_split=args.max_rows_per_split,
+        ablation_mode=args.ablation_mode,
     )
     result = TrainingRunner(config).run()
 

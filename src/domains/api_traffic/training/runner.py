@@ -25,12 +25,14 @@ class APITrainingRunner:
         dimension: int = 512,
         max_benign_refs: int = 20000,
         max_attack_refs: int = 20000,
+        reference_sampling: str = "balanced",
     ):
         self.processed_data_dir = Path(processed_data_dir)
         self.experiment_dir = Path(experiment_dir)
         self.dimension = dimension
         self.max_benign_refs = max_benign_refs
         self.max_attack_refs = max_attack_refs
+        self.reference_sampling = reference_sampling
         (self.experiment_dir / "reports").mkdir(parents=True, exist_ok=True)
         (self.experiment_dir / "predictions").mkdir(parents=True, exist_ok=True)
 
@@ -44,6 +46,7 @@ class APITrainingRunner:
             train_df=train_df,
             max_benign_refs=self.max_benign_refs,
             max_attack_refs=self.max_attack_refs,
+            reference_sampling=self.reference_sampling,
         )
 
         val_scores = model.predict_dataframe(val_df)["y_score"].to_numpy(dtype=float)
@@ -93,6 +96,7 @@ class APITrainingRunner:
             "dimension": self.dimension,
             "max_benign_refs": self.max_benign_refs,
             "max_attack_refs": self.max_attack_refs,
+            "reference_sampling": self.reference_sampling,
             "selected_threshold": model.threshold,
             "model_type": "endpoint_aware_hashed_semantic_retrieval",
             "training_policy": "fit_on_train_tune_on_val_do_not_touch_test",

@@ -125,14 +125,21 @@ class APIRetrievalModel:
         max_benign_refs: int = 20000,
         max_attack_refs: int = 20000,
         random_seed: int = 42,
+        reference_sampling: str = "balanced",
     ) -> None:
         """Build benign and attack reference indexes from the training split."""
         labeled = train_df[pd.to_numeric(train_df["label_known"], errors="coerce").fillna(0).astype(int) == 1]
         benign_df = labeled[pd.to_numeric(labeled["label_binary"], errors="coerce").fillna(1).astype(int) == 0]
         attack_df = labeled[pd.to_numeric(labeled["label_binary"], errors="coerce").fillna(0).astype(int) == 1]
 
-        benign_df = self._sample_rows(benign_df, max_benign_refs, random_seed)
-        attack_df = self._sample_rows(attack_df, max_attack_refs, random_seed + 1)
+        if reference_sampling == "balanced":
+            benign_df = self._sample_balanced(benign_df, max_benign_refs, "endpoint_key", random_seed)
+            attack_df = self._sample_balanced(attack_df, max_attack_refs, "attack_type", random_seed + 1)
+        elif reference_sampling == "random":
+            benign_df = self._sample_rows(benign_df, max_benign_refs, random_seed)
+            attack_df = self._sample_rows(attack_df, max_attack_refs, random_seed + 1)
+        else:
+            raise ValueError("reference_sampling must be 'balanced' or 'random'")
 
         self.benign_vectors = self.vectorize(benign_df)
         self.benign_endpoint_keys = benign_df["endpoint_key"].fillna("").astype(str).tolist()
@@ -318,6 +325,47 @@ class APIRetrievalModel:
         if max_rows <= 0 or len(df) <= max_rows:
             return df.copy()
         return df.sample(n=max_rows, random_state=random_seed).reset_index(drop=True)
+
+    @classmethod
+    def _sample_balanced(
+        cls,
+        df: pd.DataFrame,
+        max_rows: int,
+        group_column: str,
+        random_seed: int,
+    ) -> pd.DataFrame:
+        """Sample references with coverage across attack types or endpoints."""
+        if max_rows <= 0 or len(df) <= max_rows or group_column not in df.columns:
+            return df.copy()
+
+        groups = [(name, group) for name, group in df.groupby(group_column, dropna=False)]
+        if not groups:
+            return df.head(0).copy()
+
+        rng = np.random.default_rng(random_seed)
+        per_group = max(max_rows // len(groups), 1)
+        sampled_frames = []
+        used_indices = set()
+
+        for _, group in groups:
+            take = min(len(group), per_group)
+            sampled = group.sample(n=take, random_state=int(rng.integers(0, 2**31 - 1)))
+            sampled_frames.append(sampled)
+            used_indices.update(sampled.index.tolist())
+
+        sampled_df = pd.concat(sampled_frames, ignore_index=False) if sampled_frames else df.head(0)
+        remaining_slots = max_rows - len(sampled_df)
+        if remaining_slots > 0:
+            remaining = df.loc[~df.index.isin(used_indices)]
+            if len(remaining) > 0:
+                fill = cls._sample_rows(
+                    remaining,
+                    min(remaining_slots, len(remaining)),
+                    int(rng.integers(0, 2**31 - 1)),
+                )
+                sampled_df = pd.concat([sampled_df, fill], ignore_index=False)
+
+        return sampled_df.sample(frac=1.0, random_state=random_seed).head(max_rows).reset_index(drop=True)
 
     @staticmethod
     def _metadata_frame(df: pd.DataFrame) -> pd.DataFrame:
